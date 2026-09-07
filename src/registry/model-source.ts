@@ -26,7 +26,7 @@ export function resolveModelSource(provider: RegistryProvider): ProviderModelSou
   }
   const template = resolveProviderTemplate(provider) ?? getTemplateById(provider.templateId);
   if (template) return template.modelSource;
-  if (provider.templateId === 'custom-openai' || provider.templateId === 'custom-anthropic') {
+  if (provider.templateId === 'custom-openai' || provider.templateId === 'custom-anthropic' || provider.templateId === 'custom-gemini') {
     return 'api-list';
   }
   return 'api-list';

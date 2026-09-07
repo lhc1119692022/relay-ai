@@ -798,8 +798,10 @@ function buildTemplateCard(template) {
 }
 
 function buildCustomEndpointBodyContent(template, card) {
-  const kind = template.id === '__custom_anthropic__' ? 'anthropic' : 'openai';
+  const kind = template.id === '__custom_anthropic__' ? 'anthropic'
+    : template.id === '__custom_gemini__' ? 'gemini' : 'openai';
   const isAnthropicKind = kind === 'anthropic';
+  const isGeminiKind = kind === 'gemini';
 
   const content = document.createElement('div');
   content.className = 'provider-body-content';
@@ -820,19 +822,20 @@ function buildCustomEndpointBodyContent(template, card) {
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.className = 'key-input';
-  nameInput.placeholder = isAnthropicKind ? 'e.g. My LiteLLM Proxy' : 'e.g. Local Ollama';
+  nameInput.placeholder = isAnthropicKind ? 'e.g. My LiteLLM Proxy' : isGeminiKind ? 'e.g. Gemini Relay' : 'e.g. Local Ollama';
   nameInput.autocomplete = 'off';
 
   const urlInput = document.createElement('input');
   urlInput.type = 'url';
   urlInput.className = 'key-input';
-  urlInput.placeholder = isAnthropicKind ? 'https://my-proxy.example.com/v1' : 'http://localhost:11434/v1';
+  urlInput.placeholder = isAnthropicKind ? 'https://my-proxy.example.com/v1'
+    : isGeminiKind ? 'https://generativelanguage.googleapis.com/v1beta' : 'http://localhost:11434/v1';
   urlInput.autocomplete = 'off';
 
   const keyInput = document.createElement('input');
   keyInput.type = 'password';
   keyInput.className = 'key-input';
-  keyInput.placeholder = isAnthropicKind ? 'API key (required)' : 'API key (leave blank if not needed)';
+  keyInput.placeholder = isAnthropicKind || isGeminiKind ? 'API key (required)' : 'API key (leave blank if not needed)';
   keyInput.autocomplete = 'off';
 
   const headersInput = document.createElement('textarea');
@@ -878,7 +881,7 @@ function buildCustomEndpointBodyContent(template, card) {
 
     if (!displayName) { feedback.textContent = 'Enter a provider name.'; feedback.className = 'key-feedback error'; return; }
     if (!baseUrl) { feedback.textContent = 'Enter a base URL.'; feedback.className = 'key-feedback error'; return; }
-    if (isAnthropicKind && !apiKey) { feedback.textContent = 'API key is required for Anthropic-compatible providers.'; feedback.className = 'key-feedback error'; return; }
+    if ((isAnthropicKind || isGeminiKind) && !apiKey) { feedback.textContent = `API key is required for ${isGeminiKind ? 'Gemini Native' : 'Anthropic-compatible'} providers.`; feedback.className = 'key-feedback error'; return; }
 
     addBtn.disabled = true;
     feedback.textContent = 'Connecting and fetching models…';
@@ -1203,7 +1206,7 @@ function buildClinePassBodyContent(template, card, provider) {
 }
 
 function buildTemplateBodyContent(template, card) {
-  const isCustom = template.id === '__custom_openai__' || template.id === '__custom_anthropic__';
+  const isCustom = template.id === '__custom_openai__' || template.id === '__custom_anthropic__' || template.id === '__custom_gemini__';
   if (isCustom) return buildCustomEndpointBodyContent(template, card);
   if (template.id === 'cline-pass'
     || (template.authMethods?.includes('api') && template.authMethods?.includes('oauth'))) {

@@ -85,14 +85,14 @@ import {
   updateCustomEndpointProvider,
   validateCustomEndpointUrl,
   writeSecureLogLine
-} from "./chunk-2NXLK3O6.js";
+} from "./chunk-5U4A5QFO.js";
 import {
   __toCommonJS,
   init_provider_templates,
   listAddableTemplates,
   listVisibleOAuthTemplates,
   provider_templates_exports
-} from "./chunk-P4IS6537.js";
+} from "./chunk-SNAZEWRV.js";
 
 // src/ui-command.ts
 import { createServer } from "http";
@@ -742,8 +742,8 @@ async function handleGetModels(res, target, codexSubagents = false, uiMode) {
     const registry = loadRegistry();
     const rawCountById = new Map(registry.providers.map((p2) => [p2.id, p2.modelsCache?.models.length ?? 0]));
     const customById = new Map(
-      registry.providers.filter((rp) => rp.templateId === "custom-openai" || rp.templateId === "custom-anthropic").map((rp) => [rp.id, {
-        kind: rp.templateId === "custom-anthropic" ? "anthropic" : "openai",
+      registry.providers.filter((rp) => rp.templateId === "custom-openai" || rp.templateId === "custom-anthropic" || rp.templateId === "custom-gemini").map((rp) => [rp.id, {
+        kind: rp.templateId === "custom-anthropic" ? "anthropic" : rp.templateId === "custom-gemini" ? "gemini" : "openai",
         baseUrl: rp.api.url ?? "",
         headers: rp.api.headers ?? {}
       }])
@@ -833,7 +833,8 @@ async function handlePostKeys(req, res) {
 }
 var CUSTOM_TEMPLATES = [
   { id: "__custom_openai__", name: "Custom OpenAI-compatible", signupUrl: null, authType: "api", custom: true },
-  { id: "__custom_anthropic__", name: "Custom Anthropic-compatible", signupUrl: null, authType: "api", custom: true }
+  { id: "__custom_anthropic__", name: "Custom Anthropic-compatible", signupUrl: null, authType: "api", custom: true },
+  { id: "__custom_gemini__", name: "Custom Gemini Native", signupUrl: null, authType: "api", custom: true }
 ];
 function handleGetTemplates(res) {
   const registry = loadRegistry();
@@ -880,8 +881,8 @@ async function handleAddCustomProvider(req, res) {
   try {
     const body = JSON.parse(await readBody(req));
     const { kind, displayName, baseUrl, apiKey = "", headers, confirmDuplicate } = body;
-    if (kind !== "openai" && kind !== "anthropic") {
-      sendJson(res, 400, { error: 'kind must be "openai" or "anthropic"' });
+    if (kind !== "openai" && kind !== "anthropic" && kind !== "gemini") {
+      sendJson(res, 400, { error: 'kind must be "openai", "anthropic", or "gemini"' });
       return;
     }
     if (!displayName?.trim()) {
@@ -958,7 +959,7 @@ async function handleAddProvider(req, res) {
       sendJson(res, 400, { error: "templateId required" });
       return;
     }
-    const { listSupportedTemplates } = await import("./provider-templates-7M24FAAI.js");
+    const { listSupportedTemplates } = await import("./provider-templates-3RUJGZCX.js");
     const template = listSupportedTemplates().find((t) => t.id === templateId);
     if (!template) {
       sendJson(res, 404, { error: `Template '${templateId}' not found` });
@@ -1810,4 +1811,4 @@ export {
   resolveUiShutdownDecision,
   runUiCommand
 };
-//# sourceMappingURL=ui-command-6ZMM5K5K.js.map
+//# sourceMappingURL=ui-command-JUCGRXH4.js.map

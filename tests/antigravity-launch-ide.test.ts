@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   findAntigravityAppBinary,
   findAntigravityIdeBinary,
@@ -9,7 +9,7 @@ import {
   waitForAntigravityAppQuit,
   waitForAntigravityIdeQuit,
 } from '../src/antigravity/launch-ide.js';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -28,6 +28,11 @@ vi.mock('node:child_process', () => {
 });
 
 describe('antigravity launch-ide', () => {
+  afterEach(() => {
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(spawn).mockClear();
+  });
+
   it.skipIf(!findAntigravityAppBinary())('finds standalone Antigravity app binary on macOS when the optional GUI is installed', () => {
     const bin = findAntigravityAppBinary();
     expect(bin).toBeDefined();
@@ -48,7 +53,11 @@ describe('antigravity launch-ide', () => {
     expect(code).toBe(0);
     expect(spawn).toHaveBeenCalledWith(
       expect.any(String),
-      [`--user-data-dir=${tempProfile}`],
+      expect.arrayContaining([
+        `--user-data-dir=${tempProfile}`,
+        '--allow-insecure-localhost',
+        '--proxy-bypass-list=localhost;127.0.0.1;[::1]',
+      ]),
       expect.objectContaining({
         stdio: 'ignore',
         detached: true,
@@ -115,6 +124,8 @@ describe('antigravity launch-ide', () => {
       expect.arrayContaining([
         `--user-data-dir=${tempProfile}`,
         expect.stringContaining(path.join('.relay-ai', 'antigravity', 'extensions')),
+        '--allow-insecure-localhost',
+        '--proxy-bypass-list=localhost;127.0.0.1;[::1]',
       ]),
       expect.objectContaining({
         stdio: 'ignore',
@@ -179,5 +190,22 @@ describe('antigravity launch-ide', () => {
     expect(processListCalls).toBeGreaterThanOrEqual(2);
 
     fs.rmSync(tempProfile, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform !== 'win32')('falls back to the legacy profile-scoped WMI provider when CIM fails', () => {
+    vi.mocked(execFileSync).mockReturnValueOnce('running\n');
+
+    expect(isAntigravityAppRunning('C:\\Users\\test\\.relay-ai\\antigravity\\app-profile')).toBe(true);
+    expect(vi.mocked(execFileSync)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(execFileSync).mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
+      expect.stringContaining('Get-WmiObject Win32_Process'),
+    ]));
+  });
+
+  it.skipIf(process.platform !== 'win32')('conservatively keeps the instance alive when both Windows process queries fail', () => {
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error('process enumeration unavailable'); });
+
+    expect(isAntigravityAppRunning('C:\\Users\\test\\.relay-ai\\antigravity\\app-profile')).toBe(true);
+    expect(vi.mocked(execFileSync)).toHaveBeenCalledTimes(1);
   });
 });

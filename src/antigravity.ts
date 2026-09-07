@@ -24,6 +24,12 @@ import {
   waitForAntigravityAppQuit,
   waitForAntigravityIdeQuit,
 } from './antigravity/launch-ide.js';
+import {
+  getAntigravityMainLogOffset,
+  getAntigravityLanguageServerLogOffset,
+  resetAntigravityLaunchLogs,
+  waitForAntigravityReady,
+} from './antigravity/readiness.js';
 import { pickLocalModel } from './prompts.js';
 import { getAntigravityDebugLogPath, makeTraceLogger } from './trace-log.js';
 import { providerSelectOption, formatModelLabel, relayIntro, relayOutro } from './ui.js';
@@ -301,12 +307,21 @@ async function resolveAndBuildRoutes(
 export function waitForShutdown(
   input: NodeJS.ReadStream = process.stdin,
   platform: NodeJS.Platform = process.platform,
-): Promise<'sigint' | 'sigterm' | 'sighup'> {
+  isProcessRunning?: () => boolean,
+  processPollIntervalMs = 2_000,
+): Promise<'sigint' | 'sigterm' | 'sighup' | 'process-exited'> {
   return new Promise(resolve => {
     const captureWindowsCtrlC = platform === 'win32' && input.isTTY;
     const wasRaw = input.isRaw;
     const wasPaused = input.isPaused();
+    let processPoll: NodeJS.Timeout | undefined;
+    // Readiness has already observed the managed process before this wait
+    // loop starts. Treat it as seen so an immediate close is not mistaken for
+    // a permanent startup gap.
+    let processWasSeen = true;
+    let missingSince = 0;
     const cleanup = (): void => {
+      if (processPoll) clearInterval(processPoll);
       process.removeListener('SIGINT', onSigint);
       process.removeListener('SIGTERM', onSigterm);
       process.removeListener('SIGHUP', onSighup);
@@ -316,6 +331,26 @@ export function waitForShutdown(
         if (wasPaused) input.pause();
       }
     };
+    const processPollFn = isProcessRunning
+      ? (): void => {
+        let running = false;
+        try { running = isProcessRunning(); } catch { /* treat a probe error as transient */ }
+        if (running) {
+          processWasSeen = true;
+          missingSince = 0;
+          return;
+        }
+        if (!processWasSeen) return;
+        missingSince ||= Date.now();
+        // Process enumeration can briefly miss a process during Electron's
+        // self-restart. Require two consecutive seconds before treating it as
+        // a user-closed app and tearing down the Relay gateway.
+        if (Date.now() - missingSince >= Math.max(processPollIntervalMs, 2_000)) {
+          cleanup();
+          resolve('process-exited');
+        }
+      }
+      : undefined;
     const onSigint = (): void => { cleanup(); resolve('sigint'); };
     const onSigterm = (): void => { cleanup(); resolve('sigterm'); };
     const onSighup = (): void => { cleanup(); resolve('sighup'); };
@@ -333,7 +368,125 @@ export function waitForShutdown(
       input.setRawMode(true);
       input.resume();
     }
+    if (processPollFn) {
+      processPoll = setInterval(processPollFn, processPollIntervalMs);
+    }
   });
+}
+
+const ANTIGRAVITY_STARTUP_ATTEMPTS = 2;
+// Antigravity's Go language server can spend 30+ seconds refreshing Google
+// auth after a Windows reboot. A short deadline turns a recoverable boot race
+// into the "attempt 2/2" failure the user sees in the terminal.
+const ANTIGRAVITY_STARTUP_TIMEOUT_MS = 90_000;
+
+type DesktopRecoveryOptions = {
+  label: string;
+  profileDir: string;
+  env: NodeJS.ProcessEnv;
+  gatewayUrl: string;
+  childArgs: string[];
+  launch: (
+    env: NodeJS.ProcessEnv,
+    profileDir: string,
+    gatewayUrl: string,
+    childArgs: string[],
+  ) => Promise<number>;
+  quitGracefully: (profileDir: string) => void;
+  forceQuit: (profileDir: string) => void;
+  waitForQuit: (profileDir: string) => Promise<boolean>;
+  isRunning: (profileDir: string) => boolean;
+};
+
+/**
+ * Antigravity reports its local port before the language server is ready to
+ * serve the Electron page. Probe that page before handing control to the
+ * terminal wait loop, and recover once from the cold-start race that otherwise
+ * leaves a permanent black window after ERR_TIMED_OUT.
+ */
+export async function launchDesktopWithRecovery(opts: DesktopRecoveryOptions): Promise<number> {
+  let logOffset = 0;
+  let languageServerLogOffset = 0;
+
+  for (let attempt = 1; attempt <= ANTIGRAVITY_STARTUP_ATTEMPTS; attempt++) {
+    // The profile is Relay-owned and the previous managed process has already
+    // been stopped (or is about to be stopped by the retry path). Reset both
+    // logs before each attempt so a stale HTTPS port can never win readiness.
+    resetAntigravityLaunchLogs(opts.profileDir);
+    logOffset = getAntigravityMainLogOffset(opts.profileDir);
+    languageServerLogOffset = getAntigravityLanguageServerLogOffset(opts.profileDir);
+    const launchCode = await opts.launch(
+      opts.env,
+      opts.profileDir,
+      opts.gatewayUrl,
+      opts.childArgs,
+    );
+    if (launchCode !== 0) return launchCode;
+
+    const readiness = await waitForAntigravityReady(opts.profileDir, {
+      logOffset,
+      languageServerLogOffset,
+      timeoutMs: ANTIGRAVITY_STARTUP_TIMEOUT_MS,
+      isProcessRunning: () => opts.isRunning(opts.profileDir),
+    });
+    if (readiness.ready) return 0;
+
+    if (readiness.reason === 'process-exited') {
+      if (attempt < ANTIGRAVITY_STARTUP_ATTEMPTS && process.platform !== 'darwin') {
+        p.log.warn(`${opts.label} exited before its local UI became ready. Restarting the managed instance (attempt ${attempt + 1}/${ANTIGRAVITY_STARTUP_ATTEMPTS})...`);
+        opts.quitGracefully(opts.profileDir);
+        if (!(await opts.waitForQuit(opts.profileDir))) {
+          opts.forceQuit(opts.profileDir);
+          await opts.waitForQuit(opts.profileDir);
+        }
+        continue;
+      }
+      p.log.error(`${opts.label} exited before its local UI became ready.`);
+      p.log.info(pc.dim(`See ${join(opts.profileDir, 'logs', 'main.log')} for details.`));
+      return 1;
+    }
+
+    const reason = readiness.sawLoadFailure || readiness.reason === 'load-timeout'
+      ? 'Electron reported a transient local-page load failure'
+      : readiness.reason === 'listening'
+        ? 'the local language server is listening but is still finishing initialization'
+        : readiness.url
+          ? 'Antigravity logged its local URL but has not answered yet'
+          : 'the local language server did not become reachable';
+    const stillRunning = opts.isRunning(opts.profileDir);
+    if (
+      attempt < ANTIGRAVITY_STARTUP_ATTEMPTS
+      && process.platform !== 'darwin'
+      && (!stillRunning || readiness.sawLoadFailure)
+    ) {
+      p.log.warn(`${opts.label} startup failed: ${reason}. Restarting the managed instance (attempt ${attempt + 1}/${ANTIGRAVITY_STARTUP_ATTEMPTS})...`);
+      opts.quitGracefully(opts.profileDir);
+      if (!(await opts.waitForQuit(opts.profileDir))) {
+        opts.forceQuit(opts.profileDir);
+        await opts.waitForQuit(opts.profileDir);
+      }
+      continue;
+    }
+
+    // Keep the local gateway alive when Electron/Google is still recovering.
+    // Returning success here is intentional: the foreground terminal remains
+    // the lifecycle owner, and the watchdog can still clean everything up if
+    // the terminal is closed. A warning gives the user the exact evidence path
+    // without destroying a potentially recoverable instance.
+    if (stillRunning || readiness.url) {
+      p.log.warn(`${opts.label} is still starting: ${reason}. Relay will keep the gateway active while the app finishes initialization.`);
+      if (readiness.url) p.log.info(pc.dim(`Local language-server URL: ${readiness.url}`));
+      p.log.info(pc.dim(`Electron log: ${join(opts.profileDir, 'logs', 'main.log')}`));
+      p.log.info(pc.dim(`Language-server log: ${join(opts.profileDir, 'logs', 'language_server.log')}`));
+      return 0;
+    }
+
+    p.log.error(`${opts.label} did not become ready: ${reason}.`);
+    p.log.info(pc.dim(`See ${join(opts.profileDir, 'logs', 'main.log')} for details.`));
+    return 1;
+  }
+
+  return 1;
 }
 
 
@@ -450,19 +603,39 @@ export async function runAntigravityAppCommand(
           p.log.info('Quit and reopen Antigravity when you are ready for the new gateway to take effect.');
           return 0;
         }
-        quitAntigravityAppGracefully();
+        quitAntigravityAppGracefully(profileDir);
         if (!(await waitForAntigravityAppQuit(profileDir))) {
           forceQuitAntigravityApp(profileDir);
           await waitForAntigravityAppQuit(profileDir);
         }
       }
 
-      const launchCode = await launchAntigravityApp(env, profileDir, gatewayHandle.url, childArgs);
+      p.log.info(pc.dim('Waiting for the local Antigravity UI to become ready...'));
+      const launchCode = await launchDesktopWithRecovery({
+        label: 'Antigravity',
+        profileDir,
+        env,
+        gatewayUrl: gatewayHandle.url,
+        childArgs,
+        launch: launchAntigravityApp,
+        quitGracefully: quitAntigravityAppGracefully,
+        forceQuit: forceQuitAntigravityApp,
+        waitForQuit: waitForAntigravityAppQuit,
+        isRunning: isAntigravityAppRunning,
+      });
       if (launchCode !== 0) return launchCode;
 
       p.log.info('Antigravity is using the Relay Cloud Code gateway.');
       p.log.info(pc.cyan('Press Ctrl+C to stop the gateway.'));
-      await waitForShutdown();
+      const shutdownReason = await waitForShutdown(
+        process.stdin,
+        process.platform,
+        () => isAntigravityAppRunning(profileDir),
+      );
+      if (shutdownReason === 'process-exited') {
+        p.log.step('Antigravity closed. Gateway stopped.');
+        return 0;
+      }
       await new Promise(r => setTimeout(r, SHUTDOWN_DRAIN_MS));
       console.log('');
       p.log.step('Gateway stopped.');
@@ -472,7 +645,7 @@ export async function runAntigravityAppCommand(
       });
       if (!p.isCancel(shouldClose) && shouldClose) {
         p.log.step('Stopping Antigravity...');
-        quitAntigravityAppGracefully();
+        quitAntigravityAppGracefully(profileDir);
         if (!(await waitForAntigravityAppQuit(profileDir))) {
           forceQuitAntigravityApp(profileDir);
           await waitForAntigravityAppQuit(profileDir);
@@ -502,19 +675,39 @@ export async function runAntigravityIdeCommand(
           p.log.info('Quit and reopen Antigravity IDE when you are ready for the new gateway to take effect.');
           return 0;
         }
-        quitAntigravityIdeGracefully();
+        quitAntigravityIdeGracefully(profileDir);
         if (!(await waitForAntigravityIdeQuit(profileDir))) {
           forceQuitAntigravityIde(profileDir);
           await waitForAntigravityIdeQuit(profileDir);
         }
       }
 
-      const launchCode = await launchAntigravityIde(env, profileDir, gatewayHandle.url, childArgs);
+      p.log.info(pc.dim('Waiting for the local Antigravity IDE UI to become ready...'));
+      const launchCode = await launchDesktopWithRecovery({
+        label: 'Antigravity IDE',
+        profileDir,
+        env,
+        gatewayUrl: gatewayHandle.url,
+        childArgs,
+        launch: launchAntigravityIde,
+        quitGracefully: quitAntigravityIdeGracefully,
+        forceQuit: forceQuitAntigravityIde,
+        waitForQuit: waitForAntigravityIdeQuit,
+        isRunning: isAntigravityIdeRunning,
+      });
       if (launchCode !== 0) return launchCode;
 
       p.log.info('Antigravity IDE is using the Relay Cloud Code gateway.');
       p.log.info(pc.cyan('Press Ctrl+C to stop the gateway.'));
-      await waitForShutdown();
+      const shutdownReason = await waitForShutdown(
+        process.stdin,
+        process.platform,
+        () => isAntigravityIdeRunning(profileDir),
+      );
+      if (shutdownReason === 'process-exited') {
+        p.log.step('Antigravity IDE closed. Gateway stopped.');
+        return 0;
+      }
       await new Promise(r => setTimeout(r, SHUTDOWN_DRAIN_MS));
       console.log('');
       p.log.step('Gateway stopped.');
@@ -524,7 +717,7 @@ export async function runAntigravityIdeCommand(
       });
       if (!p.isCancel(shouldClose) && shouldClose) {
         p.log.step('Stopping Antigravity IDE...');
-        quitAntigravityIdeGracefully();
+        quitAntigravityIdeGracefully(profileDir);
         if (!(await waitForAntigravityIdeQuit(profileDir))) {
           forceQuitAntigravityIde(profileDir);
           await waitForAntigravityIdeQuit(profileDir);

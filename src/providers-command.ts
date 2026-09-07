@@ -615,6 +615,11 @@ async function runCustomEndpointAddFlow(): Promise<number> {
         label: 'Claude-style API servers',
         hint: 'Anthropic-compatible /v1/messages passthrough',
       },
+      {
+        value: 'gemini',
+        label: 'Gemini Native API servers',
+        hint: 'Gemini-compatible /v1beta/models and generateContent',
+      },
       { value: 'back', label: 'Back', hint: '' },
     ],
   });
@@ -629,7 +634,9 @@ async function runCustomEndpointAddFlow(): Promise<number> {
 
   const baseUrl = await p.text({
     message: 'Base URL:',
-    placeholder: kindChoice === 'openai' ? 'https://api.together.xyz/v1' : 'https://api.anthropic.com',
+    placeholder: kindChoice === 'openai'
+      ? 'https://api.together.xyz/v1'
+      : kindChoice === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta' : 'https://api.anthropic.com',
     validate: v => v.trim() ? undefined : 'URL is required',
   });
   if (p.isCancel(baseUrl)) return 0;
@@ -682,7 +689,7 @@ async function runCustomEndpointAddFlow(): Promise<number> {
     displayName: String(displayName).trim(),
     baseUrl: String(baseUrl).trim(),
     apiKey: String(apiKey ?? '').trim(),
-    kind: kindChoice as 'openai' | 'anthropic',
+    kind: kindChoice as 'openai' | 'anthropic' | 'gemini',
     allowInsecureLocal: allowInsecureHttp,
     headers: Object.keys(headers).length > 0 ? headers : undefined,
   };
@@ -845,7 +852,7 @@ export async function runProvidersAdd(): Promise<number> {
   options.push({
     value: 'custom',
     label: 'Custom server (Advanced)',
-    hint: 'OpenAI-compatible or Claude-style API URL',
+    hint: 'OpenAI, Anthropic, or Gemini Native API URL',
   });
   options.push({
     value: 'import',

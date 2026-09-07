@@ -201,7 +201,14 @@ export async function createLanguageModel(spec: ProviderModelSpec): Promise<Lang
   // produces .../v1beta/openai/models/...:streamGenerateContent → 404.
   if (npm === '@ai-sdk/google') {
     const { createGoogleGenerativeAI } = await import('@ai-sdk/google');
-    const google = createGoogleGenerativeAI({ apiKey });
+    const google = createGoogleGenerativeAI({
+      apiKey,
+      // Built-in Google uses the OpenAI-compatible URL only for discovery.
+      // Custom Gemini providers store the native Gemini root and must pass it
+      // through to the SDK.
+      ...(spec.providerId?.startsWith('custom-') && baseURL ? { baseURL } : {}),
+      ...(spec.headers ? { headers: spec.headers } : {}),
+    });
     return google(modelId);
   }
   // Registry stores root URL (no /v1) for GET /v1/models discovery — passing it here

@@ -1,5 +1,8 @@
 // src/cli.ts
 import pc from 'picocolors';
+import { configureNetworkProxy } from './network.js';
+
+configureNetworkProxy();
 import { relayIntro, relayOutro, providerSelectOption, fmtModel, fmtEnabledStar, formatModelLabel } from './ui.js';
 import * as p from '@clack/prompts';
 import { realpathSync } from 'node:fs';
@@ -761,7 +764,7 @@ ${pc.bold('How it works:')}
   The normal IDE profile is never modified.
 
 ${pc.bold('Platform:')}
-  macOS (Apple Silicon) — other platforms coming after testing.
+  macOS, Windows, and Linux (experimental; use a throwaway Google account).
 
 ${pc.bold('Examples:')}
   relay-ai antigravity-ide

@@ -4,7 +4,9 @@ import {
   detectConflicts,
   resolveApiKey,
   buildChildEnv,
+  buildAntigravityChildEnv,
   classifyKeyringError,
+  appendNoProxyHosts,
   parseAuthRef,
   providerKeyringAccount,
   relayAiKeyEnvVar,
@@ -266,5 +268,48 @@ describe('buildChildEnv', () => {
   it('uses backend URL when proxyPort is not provided', () => {
     const env = buildChildEnv(BACKENDS.go.baseUrl, 'minimax-m3', 'my-key');
     expect(env['ANTHROPIC_BASE_URL']).toBe('https://opencode.ai/zen/go');
+  });
+});
+
+describe('Antigravity proxy environment', () => {
+  it('adds loopback hosts to both NO_PROXY spellings without duplicates', () => {
+    expect(appendNoProxyHosts('localhost,127.0.0.1', ['localhost', '127.0.0.1', '::1']))
+      .toBe('localhost,127.0.0.1,::1');
+    expect(appendNoProxyHosts(undefined, ['localhost', '127.0.0.1', '::1']))
+      .toBe('localhost,127.0.0.1,::1');
+  });
+
+  it('keeps inherited proxies while exempting local Antigravity endpoints', () => {
+    const previous = {
+      HTTP_PROXY: process.env.HTTP_PROXY,
+      HTTPS_PROXY: process.env.HTTPS_PROXY,
+      NO_PROXY: process.env.NO_PROXY,
+      http_proxy: process.env.http_proxy,
+      https_proxy: process.env.https_proxy,
+      no_proxy: process.env.no_proxy,
+    };
+    try {
+      process.env.HTTP_PROXY = 'http://127.0.0.1:7890';
+      process.env.HTTPS_PROXY = 'http://127.0.0.1:7890';
+      if (process.platform !== 'win32') {
+        delete process.env.http_proxy;
+        delete process.env.https_proxy;
+      }
+      process.env.NO_PROXY = 'internal.example';
+      if (process.platform !== 'win32') delete process.env.no_proxy;
+
+      const env = buildAntigravityChildEnv('http://127.0.0.1:17645');
+      expect(env.HTTP_PROXY).toBe('http://127.0.0.1:7890');
+      expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
+      expect(env.http_proxy).toBe('http://127.0.0.1:7890');
+      expect(env.https_proxy).toBe('http://127.0.0.1:7890');
+      expect(env.NO_PROXY).toContain('127.0.0.1');
+      expect(env.no_proxy).toContain('127.0.0.1');
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 });

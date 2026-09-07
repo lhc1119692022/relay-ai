@@ -13,6 +13,7 @@ import {
   readFileAccount,
   writeFileAccount,
 } from './secrets-file.js';
+import { applyConfiguredProxyEnv } from './network.js';
 import type { ConflictInfo } from './types.js';
 
 export function detectConflicts(): ConflictInfo[] {
@@ -93,7 +94,36 @@ export function buildAntigravityChildEnv(gatewayUrl: string): NodeJS.ProcessEnv 
   env['GOOGLE_API_KEY'] = 'relay-dummy-key';
   env['GOOGLE_GEMINI_API_KEY'] = 'relay-dummy-key';
 
+  // Explorer-launched shortcuts may not inherit WinINet's proxy as shell
+  // variables. Fill it from the current user's Windows proxy settings before
+  // starting the Go language server.
+  applyConfiguredProxyEnv(env);
+
+  // The Electron shell and the language server use different proxy stacks.
+  // Always exempt the Relay-owned loopback endpoints in both spellings; a
+  // system proxy that is unavailable during Windows login must never be able
+  // to intercept the local HTTPS page and turn it into a blank window.
+  for (const name of ['NO_PROXY', 'no_proxy'] as const) {
+    env[name] = appendNoProxyHosts(env[name], ['localhost', '127.0.0.1', '::1']);
+  }
+
   return env;
+}
+
+/** Append host patterns to a NO_PROXY value without creating duplicate entries. */
+export function appendNoProxyHosts(value: string | undefined, hosts: readonly string[]): string {
+  const entries = (value ?? '')
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean);
+  const seen = new Set(entries.map(entry => entry.toLowerCase()));
+  for (const host of hosts) {
+    const normalized = host.trim();
+    if (!normalized || seen.has(normalized.toLowerCase())) continue;
+    entries.push(normalized);
+    seen.add(normalized.toLowerCase());
+  }
+  return entries.join(',');
 }
 
 /** Classify a keyring error into a human-readable reason (never throws). */

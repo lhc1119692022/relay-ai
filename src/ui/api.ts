@@ -246,9 +246,9 @@ async function handleGetModels(
     const rawCountById = new Map(registry.providers.map(p => [p.id, p.modelsCache?.models.length ?? 0]));
     const customById = new Map(
       registry.providers
-        .filter(rp => rp.templateId === 'custom-openai' || rp.templateId === 'custom-anthropic')
+        .filter(rp => rp.templateId === 'custom-openai' || rp.templateId === 'custom-anthropic' || rp.templateId === 'custom-gemini')
         .map(rp => [rp.id, {
-          kind: rp.templateId === 'custom-anthropic' ? 'anthropic' as const : 'openai' as const,
+          kind: rp.templateId === 'custom-anthropic' ? 'anthropic' as const : rp.templateId === 'custom-gemini' ? 'gemini' as const : 'openai' as const,
           baseUrl: rp.api.url ?? '',
           headers: rp.api.headers ?? {},
         }]),
@@ -350,6 +350,7 @@ async function handlePostKeys(req: IncomingMessage, res: ServerResponse): Promis
 const CUSTOM_TEMPLATES = [
   { id: '__custom_openai__', name: 'Custom OpenAI-compatible', signupUrl: null, authType: 'api', custom: true },
   { id: '__custom_anthropic__', name: 'Custom Anthropic-compatible', signupUrl: null, authType: 'api', custom: true },
+  { id: '__custom_gemini__', name: 'Custom Gemini Native', signupUrl: null, authType: 'api', custom: true },
 ] as const;
 
 function handleGetTemplates(res: ServerResponse): void {
@@ -405,8 +406,8 @@ async function handleAddCustomProvider(req: IncomingMessage, res: ServerResponse
       headers?: Record<string, string>; confirmDuplicate?: boolean;
     };
     const { kind, displayName, baseUrl, apiKey = '', headers, confirmDuplicate } = body;
-    if (kind !== 'openai' && kind !== 'anthropic') {
-      sendJson(res, 400, { error: 'kind must be "openai" or "anthropic"' }); return;
+    if (kind !== 'openai' && kind !== 'anthropic' && kind !== 'gemini') {
+      sendJson(res, 400, { error: 'kind must be "openai", "anthropic", or "gemini"' }); return;
     }
     if (!displayName?.trim()) {
       sendJson(res, 400, { error: 'displayName required' }); return;

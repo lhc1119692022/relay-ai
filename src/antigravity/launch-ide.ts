@@ -1,4 +1,4 @@
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -10,8 +10,8 @@ type ProcessListOptions = {
 };
 
 // Fixed profile dirs the orchestrator (antigravity.ts) launches under, mirrored
-// here so the graceful-quit helpers (which take no profileDir arg) can scope the
-// Linux kill to exactly the relay-managed instance and never the user's own.
+// here so the no-argument graceful-quit helpers can scope the Linux kill to
+// exactly the relay-managed instance and never the user's own.
 const LINUX_APP_PROFILE_DIR = join(homedir(), '.relay-ai', 'antigravity', 'app-profile');
 const LINUX_IDE_PROFILE_DIR = join(homedir(), '.relay-ai', 'antigravity', 'profile');
 
@@ -58,28 +58,59 @@ function linuxKillByProfile(profileDir: string, signal: NodeJS.Signals): void {
 }
 
 function runPowerShell(script: string): string {
-  return execSync(`powershell.exe -NoProfile -Command ${JSON.stringify(script)}`, {
+  // Pass the script as a distinct argv element. Building a command string and
+  // JSON-escaping it lets PowerShell's Windows command-line parser consume the
+  // embedded quotes/backslashes incorrectly; the resulting WMI query returns
+  // no rows and makes a live Antigravity process look exited.
+  return execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
   }).trim();
 }
 
+/**
+ * Query the managed Electron root without turning a temporary WMI failure
+ * into a false "the app closed" event. WMI is occasionally unavailable for a
+ * few seconds immediately after Windows login. During that brief interval we
+ * report the process as running; the next poll will make the definitive
+ * profile-scoped decision once WMI responds again.
+ */
 function winIsProcessRunningForProfile(exeName: string, profileDir: string): boolean {
+  const escapedDir = profileDir.replace(/'/g, "''");
   try {
-    const escapedDir = profileDir.replace(/'/g, "''");
     const out = runPowerShell(
-      `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' } | Select-Object -ExpandProperty ProcessId`,
+      `$ErrorActionPreference = 'Stop'; `
+      + `try { $rows = @(Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) } `
+      + `catch { $rows = @(Get-WmiObject Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) }; `
+      + `$rows = @($rows | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' }); `
+      + `if ($rows.Count -gt 0) { 'running' } else { 'stopped' }`,
     );
-    return out.length > 0;
+    return out.trim().toLowerCase() === 'running';
   } catch {
-    return false;
+    // Be conservative while Windows is bringing process enumeration back.
+    // A name-only fallback could mistake the user's normal Antigravity for the
+    // Relay-managed profile. The caller's missing-process grace period retries
+    // this exact profile-scoped query before deciding that it exited.
+    return true;
   }
 }
 
-function winQuitProcess(exeName: string): void {
+function winQuitProcess(exeName: string, profileDir?: string): void {
   try {
+    const processName = exeName.replace(/\.exe$/i, '');
+    if (!profileDir) {
+      runPowerShell(
+        `Get-Process -Name '${processName}' -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }`,
+      );
+      return;
+    }
+    const escapedDir = profileDir.replace(/'/g, "''");
     runPowerShell(
-      `Get-Process -Name '${exeName.replace(/\.exe$/i, '')}' -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }`,
+      `$ErrorActionPreference = 'Stop'; `
+      + `try { $rows = @(Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) } `
+      + `catch { $rows = @(Get-WmiObject Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) }; `
+      + `$rows | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' } | `
+      + `ForEach-Object { $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p) { [void]$p.CloseMainWindow() } }`,
     );
   } catch { /* ignore */ }
 }
@@ -94,7 +125,13 @@ function winForceQuitProcess(exeName: string, profileDir: string): void {
   try {
     const escapedDir = profileDir.replace(/'/g, "''");
     runPowerShell(
-      `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      // taskkill's /T flag includes the language server and Electron helpers
+      // even when they do not repeat --user-data-dir in their own command line.
+      `$ErrorActionPreference = 'Stop'; `
+      + `try { $rows = @(Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) } `
+      + `catch { $rows = @(Get-WmiObject Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) }; `
+      + `$roots = @($rows | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' } | `
+      + `Select-Object -ExpandProperty ProcessId); foreach ($root in $roots) { taskkill.exe /PID $root /T /F *> $null }`,
     );
   } catch { /* ignore */ }
 }
@@ -179,8 +216,8 @@ export function forceQuitAntigravityApp(profileDir: string): void {
   else if (process.platform === 'linux') linuxKillByProfile(profileDir, 'SIGKILL');
 }
 
-export function quitAntigravityIdeGracefully(): void {
-  if (process.platform === 'win32') { winQuitProcess('Antigravity IDE.exe'); return; }
+export function quitAntigravityIdeGracefully(profileDir?: string): void {
+  if (process.platform === 'win32') { winQuitProcess('Antigravity IDE.exe', profileDir); return; }
   if (process.platform === 'linux') { linuxKillByProfile(LINUX_IDE_PROFILE_DIR, 'SIGTERM'); return; }
   if (process.platform !== 'darwin') return;
   try {
@@ -194,8 +231,8 @@ export function quitAntigravityIdeGracefully(): void {
   }
 }
 
-export function quitAntigravityAppGracefully(): void {
-  if (process.platform === 'win32') { winQuitProcess('Antigravity.exe'); return; }
+export function quitAntigravityAppGracefully(profileDir?: string): void {
+  if (process.platform === 'win32') { winQuitProcess('Antigravity.exe', profileDir); return; }
   if (process.platform === 'linux') { linuxKillByProfile(LINUX_APP_PROFILE_DIR, 'SIGTERM'); return; }
   if (process.platform !== 'darwin') return;
   try {
@@ -291,6 +328,15 @@ export function launchAntigravityApp(
 
     const args = [
       `--user-data-dir=${profileDir}`,
+      // The language server serves the Electron shell over a self-signed
+      // localhost certificate. Without this Chromium rejects the local page
+      // and Antigravity presents a black window. Scope the exception to
+      // localhost rather than disabling certificate checks globally.
+      '--allow-insecure-localhost',
+      // Do not let a desktop/system proxy intercept the local language-server
+      // page. External language-server traffic still follows the inherited
+      // proxy environment.
+      '--proxy-bypass-list=localhost;127.0.0.1;[::1]',
       ...extraArgs,
     ];
 
@@ -360,6 +406,10 @@ export function launchAntigravityIde(
     const args = [
       `--user-data-dir=${profileDir}`,
       `--extensions-dir=${relayExtensionsDir}`,
+      // The language server serves the Electron shell over a self-signed
+      // localhost certificate; allow that certificate for this managed app.
+      '--allow-insecure-localhost',
+      '--proxy-bypass-list=localhost;127.0.0.1;[::1]',
       ...extraArgs,
     ];
 

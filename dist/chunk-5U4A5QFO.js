@@ -2,7 +2,99 @@
 import {
   getTemplateById,
   init_provider_templates
-} from "./chunk-P4IS6537.js";
+} from "./chunk-SNAZEWRV.js";
+
+// src/network.ts
+import { execFileSync } from "child_process";
+import { ProxyAgent, setGlobalDispatcher } from "undici";
+var configured = false;
+var defaultRegQuery = (file, args, options) => execFileSync(file, args, options);
+function readWindowsProxySettings(regQuery = defaultRegQuery) {
+  if (process.platform !== "win32") return null;
+  try {
+    const raw = regQuery(
+      "reg.exe",
+      ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+    );
+    const enabledMatch = raw.match(/^\s*ProxyEnable\s+REG_DWORD\s+0x([0-9a-f]+)/im);
+    const serverMatch = raw.match(/^\s*ProxyServer\s+REG_SZ\s+(.+)$/im);
+    const bypassMatch = raw.match(/^\s*ProxyOverride\s+REG_SZ\s+(.+)$/im);
+    const enabled = enabledMatch ? Number.parseInt(enabledMatch[1], 16) !== 0 : false;
+    return {
+      enabled,
+      proxy: enabled && serverMatch ? normalizeProxyUrl(serverMatch[1].trim()) : void 0,
+      bypass: bypassMatch?.[1]?.trim() || void 0
+    };
+  } catch {
+    return null;
+  }
+}
+function normalizeProxyUrl(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return void 0;
+  const mappings = /* @__PURE__ */ new Map();
+  for (const item of trimmed.split(";")) {
+    const separator = item.indexOf("=");
+    if (separator > 0) {
+      mappings.set(item.slice(0, separator).trim().toLowerCase(), item.slice(separator + 1).trim());
+    }
+  }
+  const selected = mappings.get("https") ?? mappings.get("http") ?? mappings.get("proxy") ?? trimmed;
+  if (!selected) return void 0;
+  return /^[a-z][a-z\d+.-]*:\/\//i.test(selected) ? selected : `http://${selected}`;
+}
+function normalizeWindowsProxyBypass(value) {
+  if (!value?.trim()) return void 0;
+  return value.split(";").map((entry) => entry.trim()).filter(Boolean).join(",");
+}
+function resolveConfiguredProxy() {
+  const inherited = [
+    process.env["HTTPS_PROXY"],
+    process.env["https_proxy"],
+    process.env["HTTP_PROXY"],
+    process.env["http_proxy"],
+    process.env["ALL_PROXY"],
+    process.env["all_proxy"]
+  ].find((value) => value?.trim());
+  if (inherited?.trim()) return inherited.trim();
+  return readWindowsProxySettings()?.proxy;
+}
+function applyConfiguredProxyEnv(env) {
+  const settings = readWindowsProxySettings();
+  const proxy = resolveConfiguredProxy();
+  if (proxy) {
+    for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
+      if (!env[name]?.trim()) env[name] = proxy;
+    }
+  }
+  const bypass = normalizeWindowsProxyBypass(settings?.bypass);
+  if (bypass) {
+    for (const name of ["NO_PROXY", "no_proxy"]) {
+      if (!env[name]?.trim()) env[name] = bypass;
+    }
+  }
+  for (const [upper, lower] of [
+    ["HTTP_PROXY", "http_proxy"],
+    ["HTTPS_PROXY", "https_proxy"],
+    ["ALL_PROXY", "all_proxy"],
+    ["NO_PROXY", "no_proxy"]
+  ]) {
+    if (env[upper]?.trim() && !env[lower]?.trim()) env[lower] = env[upper];
+    if (env[lower]?.trim() && !env[upper]?.trim()) env[upper] = env[lower];
+  }
+}
+function configureNetworkProxy() {
+  if (configured) return;
+  configured = true;
+  applyConfiguredProxyEnv(process.env);
+  const proxy = resolveConfiguredProxy();
+  if (!proxy) return;
+  try {
+    setGlobalDispatcher(new ProxyAgent(proxy));
+  } catch {
+  }
+}
 
 // src/constants.ts
 import { homedir } from "os";
@@ -85,6 +177,7 @@ var package_default = {
     open: "^11.0.0",
     picocolors: "^1.1.1",
     "smol-toml": "^1.6.1",
+    undici: "^7.29.1",
     "venice-ai-sdk-provider": "^2.0.2",
     ws: "^8.21.0",
     zod: "^3.25.76"
@@ -1071,7 +1164,14 @@ async function createLanguageModel(spec) {
   }
   if (npm === "@ai-sdk/google") {
     const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
-    const google = createGoogleGenerativeAI({ apiKey });
+    const google = createGoogleGenerativeAI({
+      apiKey,
+      // Built-in Google uses the OpenAI-compatible URL only for discovery.
+      // Custom Gemini providers store the native Gemini root and must pass it
+      // through to the SDK.
+      ...spec.providerId?.startsWith("custom-") && baseURL ? { baseURL } : {},
+      ...spec.headers ? { headers: spec.headers } : {}
+    });
     return google(modelId);
   }
   if (npm === "@ai-sdk/anthropic") {
@@ -2487,12 +2587,12 @@ import { homedir as homedir3 } from "os";
 import { join as join5 } from "path";
 
 // src/binary-lookup.ts
-import { execFileSync } from "child_process";
+import { execFileSync as execFileSync2 } from "child_process";
 import { existsSync as existsSync2 } from "fs";
 function findBinaryOnPath(name, fallbackPaths, options = {}) {
   const isWindows2 = options.isWindows ?? process.platform === "win32";
   const exists = options.exists ?? existsSync2;
-  const runWhich = options.runWhich ?? ((binary, win) => execFileSync(win ? "where.exe" : "which", [binary], {
+  const runWhich = options.runWhich ?? ((binary, win) => execFileSync2(win ? "where.exe" : "which", [binary], {
     encoding: "utf8",
     stdio: ["pipe", "pipe", "pipe"]
   }));
@@ -3837,7 +3937,22 @@ function buildAntigravityChildEnv(gatewayUrl) {
   env["GEMINI_API_KEY"] = "relay-dummy-key";
   env["GOOGLE_API_KEY"] = "relay-dummy-key";
   env["GOOGLE_GEMINI_API_KEY"] = "relay-dummy-key";
+  applyConfiguredProxyEnv(env);
+  for (const name of ["NO_PROXY", "no_proxy"]) {
+    env[name] = appendNoProxyHosts(env[name], ["localhost", "127.0.0.1", "::1"]);
+  }
   return env;
+}
+function appendNoProxyHosts(value, hosts) {
+  const entries2 = (value ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+  const seen = new Set(entries2.map((entry) => entry.toLowerCase()));
+  for (const host of hosts) {
+    const normalized = host.trim();
+    if (!normalized || seen.has(normalized.toLowerCase())) continue;
+    entries2.push(normalized);
+    seen.add(normalized.toLowerCase());
+  }
+  return entries2.join(",");
 }
 function classifyKeyringError(err) {
   const msg = err instanceof Error ? err.message : String(err);
@@ -9493,6 +9608,63 @@ async function fetchAnthropicModels(baseUrl, apiKey, extraHeaders) {
   }
 }
 
+// src/registry/fetch-gemini-models.ts
+function nativeRoot(baseUrl) {
+  const trimmed = baseUrl.trim().replace(/\/$/, "");
+  if (/\/v1(?:beta)?$/i.test(trimmed)) return trimmed;
+  return `${trimmed}/v1beta`;
+}
+async function fetchGeminiModels(baseUrl, apiKey, extraHeaders) {
+  const root = nativeRoot(baseUrl);
+  const modelsUrl2 = `${root}/models`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1e4);
+  try {
+    const response = await fetch(modelsUrl2, {
+      headers: {
+        "x-goog-api-key": apiKey,
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        ...extraHeaders
+      },
+      signal: controller.signal
+    });
+    const raw = await response.text().catch(() => "");
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        return { models: [], baseUrl: root, error: "API key was rejected.", hint: "Check the Gemini API key and endpoint." };
+      }
+      return { models: [], baseUrl: root, error: `Could not list Gemini models (HTTP ${response.status}).`, hint: "Verify the endpoint exposes the native Gemini /models API." };
+    }
+    let rows = [];
+    try {
+      rows = JSON.parse(raw).models ?? [];
+    } catch {
+    }
+    const models = rows.filter((row) => row.name && (row.supportedGenerationMethods ?? ["generateContent"]).some((m) => /generateContent/i.test(m))).map((row) => {
+      const id = row.name.replace(/^models\//, "");
+      return {
+        id,
+        name: row.displayName?.trim() || id,
+        upstreamModelId: id,
+        family: id.split("-")[0] ?? id,
+        brand: deriveBrand(id),
+        contextWindow: row.inputTokenLimit ?? resolveContextWindow(id),
+        contextWindowSource: row.inputTokenLimit ? "provider" : void 0,
+        modelFormat: "openai",
+        npm: "@ai-sdk/google",
+        apiUrl: root
+      };
+    });
+    if (!models.length) return { models: [], baseUrl: root, error: "No Gemini generateContent models returned.", hint: "Check the endpoint path and model permissions." };
+    return { models, baseUrl: root };
+  } catch {
+    return { models: [], baseUrl: root, error: "Could not reach the Gemini-compatible server.", hint: "Check the base URL and network connection." };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // src/registry/fetch-template-models.ts
 var TEST_TIMEOUT_MS = 1e4;
 function modelFormatForNpm(npm) {
@@ -9848,13 +10020,16 @@ async function validateCustomEndpointUrl(rawUrl, opts = {}) {
 
 // src/registry/custom-endpoint.ts
 function npmForKind(kind) {
-  return kind === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible";
+  if (kind === "anthropic") return "@ai-sdk/anthropic";
+  if (kind === "gemini") return "@ai-sdk/google";
+  return "@ai-sdk/openai-compatible";
 }
 function modelFormatForKind(kind) {
   return kind === "anthropic" ? "anthropic" : "openai";
 }
 function customEndpointKind(provider) {
   if (provider.templateId === "custom-anthropic") return "anthropic";
+  if (provider.templateId === "custom-gemini") return "gemini";
   if (provider.templateId === "custom-openai") return "openai";
   return null;
 }
@@ -9892,6 +10067,9 @@ function uniqueProviderId(displayName, registry) {
 async function fetchCustomEndpointModels(input) {
   if (input.kind === "anthropic") {
     return fetchAnthropicModels(input.normalizedBaseUrl, input.apiKey, input.headers);
+  }
+  if (input.kind === "gemini") {
+    return fetchGeminiModels(input.normalizedBaseUrl, input.apiKey, input.headers);
   }
   return fetchTemplateModels(
     {
@@ -9956,7 +10134,7 @@ async function addCustomEndpointProvider(input) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const entry = {
     id: providerId,
-    templateId: input.kind === "anthropic" ? "custom-anthropic" : "custom-openai",
+    templateId: input.kind === "anthropic" ? "custom-anthropic" : input.kind === "gemini" ? "custom-gemini" : "custom-openai",
     name: input.displayName.trim(),
     enabled: true,
     authRef: apiKey === "local" ? `keyring:provider:${providerId}` : `keyring:provider:${providerId}`,
@@ -10271,7 +10449,7 @@ function resolveModelSource(provider) {
   }
   const template = resolveProviderTemplate(provider) ?? getTemplateById(provider.templateId);
   if (template) return template.modelSource;
-  if (provider.templateId === "custom-openai" || provider.templateId === "custom-anthropic") {
+  if (provider.templateId === "custom-openai" || provider.templateId === "custom-anthropic" || provider.templateId === "custom-gemini") {
     return "api-list";
   }
   return "api-list";
@@ -10641,6 +10819,16 @@ async function refreshApiListProvider(provider, apiKey) {
   const extraHeaders = provider.api.headers && Object.keys(provider.api.headers).length > 0 ? provider.api.headers : void 0;
   if (npm === "@ai-sdk/anthropic") {
     const fetched2 = await fetchAnthropicModels(safeBaseUrl, apiKey, extraHeaders);
+    if (fetched2.error || fetched2.models.length === 0) {
+      return { models: [], error: fetched2.error ?? "No models returned.", baseUrl: fetched2.baseUrl };
+    }
+    return {
+      models: fetched2.models.map((m) => ({ ...m, apiUrl: fetched2.baseUrl })),
+      baseUrl: fetched2.baseUrl
+    };
+  }
+  if (customEndpointKind(provider) === "gemini") {
+    const fetched2 = await fetchGeminiModels(safeBaseUrl, apiKey, extraHeaders);
     if (fetched2.error || fetched2.models.length === 0) {
       return { models: [], error: fetched2.error ?? "No models returned.", baseUrl: fetched2.baseUrl };
     }
@@ -13054,18 +13242,18 @@ ${pc6.dim("OpenCode CLI configs: use")} relay-ai providers import${pc6.dim(" (op
 }
 
 // src/codex/app-launch.ts
-import { execFileSync as execFileSync3, execSync as execSync2, spawn as spawn3 } from "child_process";
+import { execFileSync as execFileSync4, execSync as execSync2, spawn as spawn3 } from "child_process";
 import { copyFileSync as copyFileSync3, existsSync as existsSync11, mkdirSync as mkdirSync8, readdirSync as readdirSync2, realpathSync, statSync as statSync3 } from "fs";
 import { homedir as homedir7 } from "os";
 import { dirname as dirname5, join as join12, win32 as winPath } from "path";
 import * as p6 from "@clack/prompts";
 
 // src/linux-display.ts
-import { execFileSync as execFileSync2 } from "child_process";
+import { execFileSync as execFileSync3 } from "child_process";
 import { readdirSync } from "fs";
 function displayHasWindow(display, windowId) {
   try {
-    const output = execFileSync2("xprop", ["-display", display, "-id", windowId, "WM_CLASS"], {
+    const output = execFileSync3("xprop", ["-display", display, "-id", windowId, "WM_CLASS"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     });
@@ -13082,14 +13270,14 @@ function availableDisplays() {
   }
 }
 function resolveLinuxDisplay(env = process.env, probe = displayHasWindow, displays = availableDisplays()) {
-  const configured = env.DISPLAY;
+  const configured2 = env.DISPLAY;
   const windowId = env.WINDOWID;
-  if (!windowId) return configured;
-  if (configured && probe(configured, windowId)) return configured;
+  if (!windowId) return configured2;
+  if (configured2 && probe(configured2, windowId)) return configured2;
   for (const display of displays) {
-    if (display !== configured && probe(display, windowId)) return display;
+    if (display !== configured2 && probe(display, windowId)) return display;
   }
-  return configured;
+  return configured2;
 }
 function linuxLaunchEnv(env = process.env) {
   const display = resolveLinuxDisplay(env);
@@ -13324,7 +13512,7 @@ function darwinMatchingPids() {
   const appPath = findCodexApp("darwin");
   if (!appPath) return [];
   try {
-    const processList = execFileSync3("ps", ["-axo", "pid=,command="], {
+    const processList = execFileSync4("ps", ["-axo", "pid=,command="], {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -13448,7 +13636,7 @@ function darwinQuitAppleScript() {
   return `tell application id "${CODEX_BUNDLE_ID}" to quit`;
 }
 function darwinQuit() {
-  execFileSync3("osascript", ["-e", darwinQuitAppleScript()], { stdio: "pipe" });
+  execFileSync4("osascript", ["-e", darwinQuitAppleScript()], { stdio: "pipe" });
 }
 function winQuitGraceful() {
   const nameFilter = WIN_APP_NAMES.map((name) => `'${name}'`).join(",");
@@ -13809,6 +13997,7 @@ async function launchOrRestartClaudeApp(prompt = "Restart Claude Desktop to appl
 }
 
 export {
+  configureNetworkProxy,
   BACKENDS,
   CODEX_RESPONSES_LITE_WS_URL,
   CODEX_RESPONSES_LITE_VERSION,
@@ -14064,4 +14253,4 @@ export {
   supportsClaudeTransparentMode,
   buildHttpProxyRoutes
 };
-//# sourceMappingURL=chunk-2NXLK3O6.js.map
+//# sourceMappingURL=chunk-5U4A5QFO.js.map

@@ -124,6 +124,7 @@ var package_default = {
     open: "^11.0.0",
     picocolors: "^1.1.1",
     "smol-toml": "^1.6.1",
+    undici: "^7.29.1",
     "venice-ai-sdk-provider": "^2.0.2",
     ws: "^8.21.0",
     zod: "^3.25.76"
@@ -942,7 +943,14 @@ async function createLanguageModel(spec) {
   }
   if (npm === "@ai-sdk/google") {
     const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
-    const google = createGoogleGenerativeAI({ apiKey });
+    const google = createGoogleGenerativeAI({
+      apiKey,
+      // Built-in Google uses the OpenAI-compatible URL only for discovery.
+      // Custom Gemini providers store the native Gemini root and must pass it
+      // through to the SDK.
+      ...spec.providerId?.startsWith("custom-") && baseURL ? { baseURL } : {},
+      ...spec.headers ? { headers: spec.headers } : {}
+    });
     return google(modelId);
   }
   if (npm === "@ai-sdk/anthropic") {
@@ -2857,6 +2865,10 @@ function deleteFileAccount(account, env = process.env) {
     return false;
   }
 }
+
+// src/network.ts
+import { execFileSync } from "child_process";
+import { ProxyAgent, setGlobalDispatcher } from "undici";
 
 // src/env.ts
 function resolveApiKey() {

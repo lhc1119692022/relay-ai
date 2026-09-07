@@ -45,6 +45,7 @@ import {
   codexAppInstallHint,
   codexAppModelSlug,
   codexAppSupported,
+  configureNetworkProxy,
   confirmLaunchMessage,
   createGatewayModelCatalog,
   createLanguageModel,
@@ -202,7 +203,7 @@ import {
   waitForCodexAppQuit,
   writeSecureLogLine,
   zenRegistryStub
-} from "./chunk-2NXLK3O6.js";
+} from "./chunk-5U4A5QFO.js";
 import {
   filterTemplates,
   getTemplateById,
@@ -210,7 +211,7 @@ import {
   listAddableTemplates,
   listSupportedTemplates,
   listVisibleOAuthTemplates
-} from "./chunk-P4IS6537.js";
+} from "./chunk-SNAZEWRV.js";
 
 // src/cli.ts
 import pc12 from "picocolors";
@@ -1697,6 +1698,11 @@ async function runCustomEndpointAddFlow() {
         label: "Claude-style API servers",
         hint: "Anthropic-compatible /v1/messages passthrough"
       },
+      {
+        value: "gemini",
+        label: "Gemini Native API servers",
+        hint: "Gemini-compatible /v1beta/models and generateContent"
+      },
       { value: "back", label: "Back", hint: "" }
     ]
   });
@@ -1709,7 +1715,7 @@ async function runCustomEndpointAddFlow() {
   if (p5.isCancel(displayName)) return 0;
   const baseUrl = await p5.text({
     message: "Base URL:",
-    placeholder: kindChoice === "openai" ? "https://api.together.xyz/v1" : "https://api.anthropic.com",
+    placeholder: kindChoice === "openai" ? "https://api.together.xyz/v1" : kindChoice === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.anthropic.com",
     validate: (v) => v.trim() ? void 0 : "URL is required"
   });
   if (p5.isCancel(baseUrl)) return 0;
@@ -1912,7 +1918,7 @@ async function runProvidersAdd() {
   options.push({
     value: "custom",
     label: "Custom server (Advanced)",
-    hint: "OpenAI-compatible or Claude-style API URL"
+    hint: "OpenAI, Anthropic, or Gemini Native API URL"
   });
   options.push({
     value: "import",
@@ -10391,7 +10397,7 @@ function launchAntigravityCli(env, extraArgs) {
 }
 
 // src/antigravity/launch-ide.ts
-import { execFileSync as execFileSync2, execSync as execSync4, spawn as spawn5 } from "child_process";
+import { execFileSync as execFileSync2, spawn as spawn5 } from "child_process";
 import { existsSync as existsSync7 } from "fs";
 import { homedir as homedir7 } from "os";
 import { join as join9 } from "path";
@@ -10458,26 +10464,34 @@ function linuxKillByProfile(profileDir, signal) {
   }
 }
 function runPowerShell(script) {
-  return execSync4(`powershell.exe -NoProfile -Command ${JSON.stringify(script)}`, {
+  return execFileSync2("powershell.exe", ["-NoProfile", "-Command", script], {
     encoding: "utf8",
     stdio: ["pipe", "pipe", "pipe"]
   }).trim();
 }
 function winIsProcessRunningForProfile(exeName, profileDir) {
+  const escapedDir = profileDir.replace(/'/g, "''");
   try {
-    const escapedDir = profileDir.replace(/'/g, "''");
     const out = runPowerShell(
-      `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' } | Select-Object -ExpandProperty ProcessId`
+      `$ErrorActionPreference = 'Stop'; try { $rows = @(Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) } catch { $rows = @(Get-WmiObject Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) }; $rows = @($rows | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' }); if ($rows.Count -gt 0) { 'running' } else { 'stopped' }`
     );
-    return out.length > 0;
+    return out.trim().toLowerCase() === "running";
   } catch {
-    return false;
+    return true;
   }
 }
-function winQuitProcess(exeName) {
+function winQuitProcess(exeName, profileDir) {
   try {
+    const processName = exeName.replace(/\.exe$/i, "");
+    if (!profileDir) {
+      runPowerShell(
+        `Get-Process -Name '${processName}' -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }`
+      );
+      return;
+    }
+    const escapedDir = profileDir.replace(/'/g, "''");
     runPowerShell(
-      `Get-Process -Name '${exeName.replace(/\.exe$/i, "")}' -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }`
+      `$ErrorActionPreference = 'Stop'; try { $rows = @(Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) } catch { $rows = @(Get-WmiObject Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) }; $rows | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' } | ForEach-Object { $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p) { [void]$p.CloseMainWindow() } }`
     );
   } catch {
   }
@@ -10486,7 +10500,9 @@ function winForceQuitProcess(exeName, profileDir) {
   try {
     const escapedDir = profileDir.replace(/'/g, "''");
     runPowerShell(
-      `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
+      // taskkill's /T flag includes the language server and Electron helpers
+      // even when they do not repeat --user-data-dir in their own command line.
+      `$ErrorActionPreference = 'Stop'; try { $rows = @(Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) } catch { $rows = @(Get-WmiObject Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop) }; $roots = @($rows | Where-Object { $_.CommandLine -like '*--user-data-dir=${escapedDir}*' } | Select-Object -ExpandProperty ProcessId); foreach ($root in $roots) { taskkill.exe /PID $root /T /F *> $null }`
     );
   } catch {
   }
@@ -10548,9 +10564,9 @@ function forceQuitAntigravityApp(profileDir) {
   if (process.platform === "win32") winForceQuitProcess("Antigravity.exe", profileDir);
   else if (process.platform === "linux") linuxKillByProfile(profileDir, "SIGKILL");
 }
-function quitAntigravityIdeGracefully() {
+function quitAntigravityIdeGracefully(profileDir) {
   if (process.platform === "win32") {
-    winQuitProcess("Antigravity IDE.exe");
+    winQuitProcess("Antigravity IDE.exe", profileDir);
     return;
   }
   if (process.platform === "linux") {
@@ -10568,9 +10584,9 @@ function quitAntigravityIdeGracefully() {
     });
   }
 }
-function quitAntigravityAppGracefully() {
+function quitAntigravityAppGracefully(profileDir) {
   if (process.platform === "win32") {
-    winQuitProcess("Antigravity.exe");
+    winQuitProcess("Antigravity.exe", profileDir);
     return;
   }
   if (process.platform === "linux") {
@@ -10638,6 +10654,15 @@ function launchAntigravityApp(env, profileDir, gatewayUrl, extraArgs) {
     prepareIdeProfile(profileDir, gatewayUrl);
     const args = [
       `--user-data-dir=${profileDir}`,
+      // The language server serves the Electron shell over a self-signed
+      // localhost certificate. Without this Chromium rejects the local page
+      // and Antigravity presents a black window. Scope the exception to
+      // localhost rather than disabling certificate checks globally.
+      "--allow-insecure-localhost",
+      // Do not let a desktop/system proxy intercept the local language-server
+      // page. External language-server traffic still follows the inherited
+      // proxy environment.
+      "--proxy-bypass-list=localhost;127.0.0.1;[::1]",
       ...extraArgs
     ];
     const child = spawn5(binaryPath, args, {
@@ -10681,6 +10706,10 @@ function launchAntigravityIde(env, profileDir, gatewayUrl, extraArgs) {
     const args = [
       `--user-data-dir=${profileDir}`,
       `--extensions-dir=${relayExtensionsDir}`,
+      // The language server serves the Electron shell over a self-signed
+      // localhost certificate; allow that certificate for this managed app.
+      "--allow-insecure-localhost",
+      "--proxy-bypass-list=localhost;127.0.0.1;[::1]",
       ...extraArgs
     ];
     const child = spawn5(binaryPath, args, {
@@ -10705,9 +10734,287 @@ function launchAntigravityIde(env, profileDir, gatewayUrl, extraArgs) {
   });
 }
 
+// src/antigravity/readiness.ts
+import http2 from "http";
+import https from "https";
+import net from "net";
+import tls from "tls";
+import { readFileSync as readFileSync3, writeFileSync as writeFileSync4 } from "fs";
+import { join as join10 } from "path";
+var MAIN_LOG_NAME = join10("logs", "main.log");
+var LANGUAGE_SERVER_LOG_NAME = join10("logs", "language_server.log");
+var DEFAULT_TIMEOUT_MS = 9e4;
+var DEFAULT_POLL_INTERVAL_MS = 250;
+var DEFAULT_PROBE_TIMEOUT_MS = 750;
+var DEFAULT_PROCESS_MISSING_GRACE_MS = 5e3;
+var READY_STABILITY_MS = 2e3;
+function sleep2(ms) {
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
+}
+function mainLogPath(profileDir) {
+  return join10(profileDir, MAIN_LOG_NAME);
+}
+function languageServerLogPath(profileDir) {
+  return join10(profileDir, LANGUAGE_SERVER_LOG_NAME);
+}
+function getAntigravityMainLogOffset(profileDir) {
+  try {
+    return readFileSync3(mainLogPath(profileDir), "utf8").length;
+  } catch {
+    return 0;
+  }
+}
+function resetAntigravityLaunchLogs(profileDir) {
+  for (const path3 of [mainLogPath(profileDir), languageServerLogPath(profileDir)]) {
+    try {
+      writeFileSync4(path3, "", "utf8");
+    } catch {
+    }
+  }
+}
+function readMainLogSince(profileDir, offset) {
+  try {
+    const raw = readFileSync3(mainLogPath(profileDir), "utf8");
+    return raw.length >= offset ? raw.slice(offset) : raw;
+  } catch {
+    return "";
+  }
+}
+function readLanguageServerLogSince(profileDir, offset) {
+  try {
+    const raw = readFileSync3(languageServerLogPath(profileDir), "utf8");
+    void offset;
+    return raw;
+  } catch {
+    return "";
+  }
+}
+function getAntigravityLanguageServerLogOffset(profileDir) {
+  try {
+    return readFileSync3(languageServerLogPath(profileDir), "utf8").length;
+  } catch {
+    return 0;
+  }
+}
+function extractAntigravityLocalUrl(logText) {
+  const matches = [...logText.matchAll(/Local:\s+(https?:\/\/[^\s]+)/gi)];
+  for (let index = matches.length - 1; index >= 0; index--) {
+    const candidate = matches[index]?.[1];
+    if (!candidate) continue;
+    try {
+      const parsed = new URL(candidate);
+      const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+      if (hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "::1") continue;
+      return parsed.toString();
+    } catch {
+    }
+  }
+  return null;
+}
+function extractAntigravityLanguageServerUrl(logText) {
+  const startMarkers = [...logText.matchAll(/Starting language server process\b/gi)];
+  const currentLog = startMarkers.length > 0 ? logText.slice(startMarkers[startMarkers.length - 1].index ?? 0) : logText;
+  const matches = [
+    ...currentLog.matchAll(/listening on (?:random )?port at\s+(\d+)\s+for HTTPS\b/gi),
+    ...currentLog.matchAll(/HTTPS(?:\s*\(gRPC\))?\s*(?:server\s*)?port\s*(?:is|at|:)\s*(\d+)/gi)
+  ].sort((left, right) => (right.index ?? 0) - (left.index ?? 0));
+  const port = matches.map((match) => Number.parseInt(match[1] ?? "", 10)).find((value) => Number.isInteger(value) && value > 0 && value < 65536);
+  return port ? `https://127.0.0.1:${port}/` : null;
+}
+function antigravityLogHasLoadTimeout(logText) {
+  return /ERR_(?:TIMED_OUT|NETWORK_CHANGED|CONNECTION_RESET|CONNECTION_REFUSED)/i.test(logText);
+}
+function probeAntigravityLocalUrl(url, timeoutMs = DEFAULT_PROBE_TIMEOUT_MS) {
+  return new Promise((resolve2) => {
+    let settled = false;
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
+      resolve2(ready);
+    };
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      finish(false);
+      return;
+    }
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "::1") {
+      finish(false);
+      return;
+    }
+    const requestOptions = {
+      method: "GET",
+      headers: { Connection: "close" },
+      timeout: timeoutMs,
+      ...parsed.protocol === "https:" ? { rejectUnauthorized: false } : {}
+    };
+    const request2 = (parsed.protocol === "https:" ? https : http2).request(
+      parsed,
+      requestOptions,
+      (response) => {
+        const status = response.statusCode ?? 0;
+        response.resume();
+        finish(status > 0 && status < 500);
+      }
+    );
+    request2.once("timeout", () => {
+      request2.destroy();
+      finish(false);
+    });
+    request2.once("error", () => finish(false));
+    request2.end();
+  });
+}
+function probeAntigravityLocalPort(url, timeoutMs = DEFAULT_PROBE_TIMEOUT_MS) {
+  return new Promise((resolve2) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      resolve2(false);
+      return;
+    }
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "::1") {
+      resolve2(false);
+      return;
+    }
+    const port = Number(parsed.port);
+    if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
+      resolve2(false);
+      return;
+    }
+    const tlsOptions = {
+      host: hostname,
+      port,
+      rejectUnauthorized: false
+    };
+    if (net.isIP(hostname) === 0) tlsOptions.servername = hostname;
+    const socket = parsed.protocol === "https:" ? tls.connect(tlsOptions) : net.createConnection({ host: hostname, port });
+    let settled = false;
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve2(ready);
+    };
+    socket.once("connect", () => {
+      if (parsed.protocol !== "https:") {
+        finish(true);
+      }
+    });
+    if (parsed.protocol === "https:") {
+      socket.once("secureConnect", () => {
+        finish(true);
+      });
+    }
+    socket.once("error", () => finish(false));
+    socket.setTimeout(timeoutMs, () => finish(false));
+  });
+}
+async function waitForAntigravityReady(profileDir, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const readyStabilityMs = options.readyStabilityMs ?? READY_STABILITY_MS;
+  const processCheckIntervalMs = options.processCheckIntervalMs ?? 2e3;
+  const processMissingGraceMs = options.processMissingGraceMs ?? DEFAULT_PROCESS_MISSING_GRACE_MS;
+  const offset = options.logOffset ?? 0;
+  const languageServerLogOffset = options.languageServerLogOffset ?? 0;
+  const readLog = options.readLog ?? readMainLogSince;
+  const readLanguageServerLog = options.readLanguageServerLog ?? readLanguageServerLogSince;
+  const probe = options.probe ?? probeAntigravityLocalUrl;
+  const probePort = options.probePort ?? (options.probe ? void 0 : probeAntigravityLocalPort);
+  const deadline = Date.now() + timeoutMs;
+  let latestUrl;
+  let sawCurrentLaunchLog = false;
+  let launchLogSeenAt = 0;
+  let sawPortListening = false;
+  let sawHttpReady = false;
+  let sawLoadFailure = false;
+  let httpReadySince = 0;
+  let httpReadyUrl = "";
+  let lastProcessCheckAt = 0;
+  let processMissingSince = 0;
+  while (Date.now() < deadline) {
+    const logText = readLog(profileDir, offset);
+    const languageServerLogText = readLanguageServerLog(profileDir, languageServerLogOffset);
+    sawLoadFailure ||= antigravityLogHasLoadTimeout(logText);
+    const mainUrl = extractAntigravityLocalUrl(logText);
+    const url = mainUrl ?? extractAntigravityLanguageServerUrl(languageServerLogText);
+    if (url) {
+      latestUrl = url;
+      if (mainUrl && !sawCurrentLaunchLog) {
+        sawCurrentLaunchLog = true;
+        launchLogSeenAt = Date.now();
+      }
+      const httpReady = await probe(url, probeTimeoutMs);
+      const portListening = !httpReady && probePort ? await probePort(url, probeTimeoutMs) : false;
+      sawHttpReady ||= httpReady;
+      sawPortListening ||= portListening;
+      if (httpReady) {
+        if (httpReadyUrl !== url) {
+          httpReadyUrl = url;
+          httpReadySince = Date.now();
+        }
+        httpReadySince ||= Date.now();
+        if (sawLoadFailure) {
+          return {
+            ready: false,
+            reason: "load-timeout",
+            url,
+            portListening: true,
+            httpReady: true,
+            sawLoadFailure: true
+          };
+        }
+        if (Date.now() - httpReadySince >= readyStabilityMs) {
+          return { ready: true, reason: "ready", url };
+        }
+      } else {
+        httpReadySince = 0;
+        httpReadyUrl = "";
+      }
+    }
+    if (sawCurrentLaunchLog && Date.now() - launchLogSeenAt >= 1500 && options.isProcessRunning && Date.now() - lastProcessCheckAt >= processCheckIntervalMs) {
+      lastProcessCheckAt = Date.now();
+      if (!options.isProcessRunning()) {
+        processMissingSince ||= Date.now();
+        if (Date.now() - processMissingSince >= processMissingGraceMs) {
+          return {
+            ready: false,
+            reason: "process-exited",
+            url: latestUrl,
+            portListening: sawPortListening,
+            httpReady: sawHttpReady,
+            sawLoadFailure
+          };
+        }
+      } else {
+        processMissingSince = 0;
+      }
+    }
+    await sleep2(pollIntervalMs);
+  }
+  const finalLog = readLog(profileDir, offset);
+  const finalLanguageServerLog = readLanguageServerLog(profileDir, languageServerLogOffset);
+  const finalUrl = latestUrl ?? extractAntigravityLocalUrl(finalLog) ?? extractAntigravityLanguageServerUrl(finalLanguageServerLog) ?? void 0;
+  const reason = sawPortListening ? "listening" : sawLoadFailure ? "load-timeout" : "timeout";
+  return {
+    ready: false,
+    reason,
+    url: finalUrl,
+    portListening: sawPortListening,
+    httpReady: sawHttpReady,
+    sawLoadFailure
+  };
+}
+
 // src/antigravity.ts
 import { homedir as homedir8 } from "os";
-import { join as join10 } from "path";
+import { join as join11 } from "path";
 var SHUTDOWN_DRAIN_MS = 500;
 var AGY_FAVORITES_PROVIDER_ID = "__relay_agy_favorites__";
 var AGY_FAVORITES_PROVIDER_LABEL = "\u2605 Antigravity CLI Favorites";
@@ -10892,12 +11199,16 @@ async function resolveAndBuildRoutes(provider, model, allProviders, prefs, opts)
   }
   return { routes: result.routes, apiKey: result.apiKey };
 }
-function waitForShutdown(input = process.stdin, platform = process.platform) {
+function waitForShutdown(input = process.stdin, platform = process.platform, isProcessRunning, processPollIntervalMs = 2e3) {
   return new Promise((resolve2) => {
     const captureWindowsCtrlC = platform === "win32" && input.isTTY;
     const wasRaw = input.isRaw;
     const wasPaused = input.isPaused();
+    let processPoll;
+    let processWasSeen = true;
+    let missingSince = 0;
     const cleanup = () => {
+      if (processPoll) clearInterval(processPoll);
       process.removeListener("SIGINT", onSigint);
       process.removeListener("SIGTERM", onSigterm);
       process.removeListener("SIGHUP", onSighup);
@@ -10907,6 +11218,24 @@ function waitForShutdown(input = process.stdin, platform = process.platform) {
         if (wasPaused) input.pause();
       }
     };
+    const processPollFn = isProcessRunning ? () => {
+      let running = false;
+      try {
+        running = isProcessRunning();
+      } catch {
+      }
+      if (running) {
+        processWasSeen = true;
+        missingSince = 0;
+        return;
+      }
+      if (!processWasSeen) return;
+      missingSince ||= Date.now();
+      if (Date.now() - missingSince >= Math.max(processPollIntervalMs, 2e3)) {
+        cleanup();
+        resolve2("process-exited");
+      }
+    } : void 0;
     const onSigint = () => {
       cleanup();
       resolve2("sigint");
@@ -10931,7 +11260,71 @@ function waitForShutdown(input = process.stdin, platform = process.platform) {
       input.setRawMode(true);
       input.resume();
     }
+    if (processPollFn) {
+      processPoll = setInterval(processPollFn, processPollIntervalMs);
+    }
   });
+}
+var ANTIGRAVITY_STARTUP_ATTEMPTS = 2;
+var ANTIGRAVITY_STARTUP_TIMEOUT_MS = 9e4;
+async function launchDesktopWithRecovery(opts) {
+  let logOffset = 0;
+  let languageServerLogOffset = 0;
+  for (let attempt = 1; attempt <= ANTIGRAVITY_STARTUP_ATTEMPTS; attempt++) {
+    resetAntigravityLaunchLogs(opts.profileDir);
+    logOffset = getAntigravityMainLogOffset(opts.profileDir);
+    languageServerLogOffset = getAntigravityLanguageServerLogOffset(opts.profileDir);
+    const launchCode = await opts.launch(
+      opts.env,
+      opts.profileDir,
+      opts.gatewayUrl,
+      opts.childArgs
+    );
+    if (launchCode !== 0) return launchCode;
+    const readiness = await waitForAntigravityReady(opts.profileDir, {
+      logOffset,
+      languageServerLogOffset,
+      timeoutMs: ANTIGRAVITY_STARTUP_TIMEOUT_MS,
+      isProcessRunning: () => opts.isRunning(opts.profileDir)
+    });
+    if (readiness.ready) return 0;
+    if (readiness.reason === "process-exited") {
+      if (attempt < ANTIGRAVITY_STARTUP_ATTEMPTS && process.platform !== "darwin") {
+        p11.log.warn(`${opts.label} exited before its local UI became ready. Restarting the managed instance (attempt ${attempt + 1}/${ANTIGRAVITY_STARTUP_ATTEMPTS})...`);
+        opts.quitGracefully(opts.profileDir);
+        if (!await opts.waitForQuit(opts.profileDir)) {
+          opts.forceQuit(opts.profileDir);
+          await opts.waitForQuit(opts.profileDir);
+        }
+        continue;
+      }
+      p11.log.error(`${opts.label} exited before its local UI became ready.`);
+      p11.log.info(pc9.dim(`See ${join11(opts.profileDir, "logs", "main.log")} for details.`));
+      return 1;
+    }
+    const reason = readiness.sawLoadFailure || readiness.reason === "load-timeout" ? "Electron reported a transient local-page load failure" : readiness.reason === "listening" ? "the local language server is listening but is still finishing initialization" : readiness.url ? "Antigravity logged its local URL but has not answered yet" : "the local language server did not become reachable";
+    const stillRunning = opts.isRunning(opts.profileDir);
+    if (attempt < ANTIGRAVITY_STARTUP_ATTEMPTS && process.platform !== "darwin" && (!stillRunning || readiness.sawLoadFailure)) {
+      p11.log.warn(`${opts.label} startup failed: ${reason}. Restarting the managed instance (attempt ${attempt + 1}/${ANTIGRAVITY_STARTUP_ATTEMPTS})...`);
+      opts.quitGracefully(opts.profileDir);
+      if (!await opts.waitForQuit(opts.profileDir)) {
+        opts.forceQuit(opts.profileDir);
+        await opts.waitForQuit(opts.profileDir);
+      }
+      continue;
+    }
+    if (stillRunning || readiness.url) {
+      p11.log.warn(`${opts.label} is still starting: ${reason}. Relay will keep the gateway active while the app finishes initialization.`);
+      if (readiness.url) p11.log.info(pc9.dim(`Local language-server URL: ${readiness.url}`));
+      p11.log.info(pc9.dim(`Electron log: ${join11(opts.profileDir, "logs", "main.log")}`));
+      p11.log.info(pc9.dim(`Language-server log: ${join11(opts.profileDir, "logs", "language_server.log")}`));
+      return 0;
+    }
+    p11.log.error(`${opts.label} did not become ready: ${reason}.`);
+    p11.log.info(pc9.dim(`See ${join11(opts.profileDir, "logs", "main.log")} for details.`));
+    return 1;
+  }
+  return 1;
 }
 async function runAntigravityCommand(intro, tracePrefix, trace, boot, launch, opts = {}) {
   const prefs = loadPreferences();
@@ -11001,7 +11394,7 @@ async function runAntigravityAppCommand(childArgs, trace = false, boot) {
     trace,
     boot,
     async (env, _routes, gatewayHandle) => {
-      const profileDir = join10(homedir8(), ".relay-ai", "antigravity", "app-profile");
+      const profileDir = join11(homedir8(), ".relay-ai", "antigravity", "app-profile");
       if (isAntigravityAppRunning(profileDir)) {
         const restart = await p11.confirm({
           message: "Restart Antigravity to apply this Relay gateway?",
@@ -11011,17 +11404,37 @@ async function runAntigravityAppCommand(childArgs, trace = false, boot) {
           p11.log.info("Quit and reopen Antigravity when you are ready for the new gateway to take effect.");
           return 0;
         }
-        quitAntigravityAppGracefully();
+        quitAntigravityAppGracefully(profileDir);
         if (!await waitForAntigravityAppQuit(profileDir)) {
           forceQuitAntigravityApp(profileDir);
           await waitForAntigravityAppQuit(profileDir);
         }
       }
-      const launchCode = await launchAntigravityApp(env, profileDir, gatewayHandle.url, childArgs);
+      p11.log.info(pc9.dim("Waiting for the local Antigravity UI to become ready..."));
+      const launchCode = await launchDesktopWithRecovery({
+        label: "Antigravity",
+        profileDir,
+        env,
+        gatewayUrl: gatewayHandle.url,
+        childArgs,
+        launch: launchAntigravityApp,
+        quitGracefully: quitAntigravityAppGracefully,
+        forceQuit: forceQuitAntigravityApp,
+        waitForQuit: waitForAntigravityAppQuit,
+        isRunning: isAntigravityAppRunning
+      });
       if (launchCode !== 0) return launchCode;
       p11.log.info("Antigravity is using the Relay Cloud Code gateway.");
       p11.log.info(pc9.cyan("Press Ctrl+C to stop the gateway."));
-      await waitForShutdown();
+      const shutdownReason = await waitForShutdown(
+        process.stdin,
+        process.platform,
+        () => isAntigravityAppRunning(profileDir)
+      );
+      if (shutdownReason === "process-exited") {
+        p11.log.step("Antigravity closed. Gateway stopped.");
+        return 0;
+      }
       await new Promise((r) => setTimeout(r, SHUTDOWN_DRAIN_MS));
       console.log("");
       p11.log.step("Gateway stopped.");
@@ -11031,7 +11444,7 @@ async function runAntigravityAppCommand(childArgs, trace = false, boot) {
       });
       if (!p11.isCancel(shouldClose) && shouldClose) {
         p11.log.step("Stopping Antigravity...");
-        quitAntigravityAppGracefully();
+        quitAntigravityAppGracefully(profileDir);
         if (!await waitForAntigravityAppQuit(profileDir)) {
           forceQuitAntigravityApp(profileDir);
           await waitForAntigravityAppQuit(profileDir);
@@ -11049,7 +11462,7 @@ async function runAntigravityIdeCommand(childArgs, trace = false, boot) {
     trace,
     boot,
     async (env, _routes, gatewayHandle) => {
-      const profileDir = join10(homedir8(), ".relay-ai", "antigravity", "profile");
+      const profileDir = join11(homedir8(), ".relay-ai", "antigravity", "profile");
       if (isAntigravityIdeRunning(profileDir)) {
         const restart = await p11.confirm({
           message: "Restart Antigravity IDE to apply this Relay gateway?",
@@ -11059,17 +11472,37 @@ async function runAntigravityIdeCommand(childArgs, trace = false, boot) {
           p11.log.info("Quit and reopen Antigravity IDE when you are ready for the new gateway to take effect.");
           return 0;
         }
-        quitAntigravityIdeGracefully();
+        quitAntigravityIdeGracefully(profileDir);
         if (!await waitForAntigravityIdeQuit(profileDir)) {
           forceQuitAntigravityIde(profileDir);
           await waitForAntigravityIdeQuit(profileDir);
         }
       }
-      const launchCode = await launchAntigravityIde(env, profileDir, gatewayHandle.url, childArgs);
+      p11.log.info(pc9.dim("Waiting for the local Antigravity IDE UI to become ready..."));
+      const launchCode = await launchDesktopWithRecovery({
+        label: "Antigravity IDE",
+        profileDir,
+        env,
+        gatewayUrl: gatewayHandle.url,
+        childArgs,
+        launch: launchAntigravityIde,
+        quitGracefully: quitAntigravityIdeGracefully,
+        forceQuit: forceQuitAntigravityIde,
+        waitForQuit: waitForAntigravityIdeQuit,
+        isRunning: isAntigravityIdeRunning
+      });
       if (launchCode !== 0) return launchCode;
       p11.log.info("Antigravity IDE is using the Relay Cloud Code gateway.");
       p11.log.info(pc9.cyan("Press Ctrl+C to stop the gateway."));
-      await waitForShutdown();
+      const shutdownReason = await waitForShutdown(
+        process.stdin,
+        process.platform,
+        () => isAntigravityIdeRunning(profileDir)
+      );
+      if (shutdownReason === "process-exited") {
+        p11.log.step("Antigravity IDE closed. Gateway stopped.");
+        return 0;
+      }
       await new Promise((r) => setTimeout(r, SHUTDOWN_DRAIN_MS));
       console.log("");
       p11.log.step("Gateway stopped.");
@@ -11079,7 +11512,7 @@ async function runAntigravityIdeCommand(childArgs, trace = false, boot) {
       });
       if (!p11.isCancel(shouldClose) && shouldClose) {
         p11.log.step("Stopping Antigravity IDE...");
-        quitAntigravityIdeGracefully();
+        quitAntigravityIdeGracefully(profileDir);
         if (!await waitForAntigravityIdeQuit(profileDir)) {
           forceQuitAntigravityIde(profileDir);
           await waitForAntigravityIdeQuit(profileDir);
@@ -11094,7 +11527,7 @@ async function runAntigravityIdeCommand(childArgs, trace = false, boot) {
 // src/codex-app.ts
 import pc10 from "picocolors";
 import * as p12 from "@clack/prompts";
-import { join as join13 } from "path";
+import { join as join14 } from "path";
 
 // src/codex/app-provider-routes.ts
 function codexRouteToProxyRoute(provider, model, apiKey) {
@@ -11183,14 +11616,14 @@ async function buildCodexAppProviderCatalogRoutes(provider, apiKey, selectedMode
 }
 
 // src/codex/app-config.ts
-import { existsSync as existsSync8, readFileSync as readFileSync3, rmSync as rmSync3, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4 } from "fs";
-import { dirname as dirname2, join as join11 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync4, rmSync as rmSync3, writeFileSync as writeFileSync5, mkdirSync as mkdirSync4 } from "fs";
+import { dirname as dirname2, join as join12 } from "path";
 import { parse, stringify } from "smol-toml";
 function getCodexConfigPath() {
-  return join11(getCodexHome(), "config.toml");
+  return join12(getCodexHome(), "config.toml");
 }
 function getCodexAppSidecarProfilePath() {
-  return join11(getCodexHome(), `${CODEX_APP_PROVIDER_ID}.config.toml`);
+  return join12(getCodexHome(), `${CODEX_APP_PROVIDER_ID}.config.toml`);
 }
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -11218,7 +11651,7 @@ function isMultiAgentV2Enabled(value) {
 }
 function readCodexConfigText(path3 = getCodexConfigPath()) {
   if (!existsSync8(path3)) return "";
-  return readFileSync3(path3, "utf8");
+  return readFileSync4(path3, "utf8");
 }
 function parseCodexConfig(text5) {
   if (!text5.trim()) return {};
@@ -11427,7 +11860,7 @@ function restoreConfigFromState(state, configPath = getCodexConfigPath()) {
     rmSync3(configPath, { force: true });
     return true;
   }
-  writeFileSync4(configPath, `${stringify(config)}
+  writeFileSync5(configPath, `${stringify(config)}
 `, "utf8");
   return true;
 }
@@ -11439,7 +11872,7 @@ function previewAppConfigToml(spec) {
 }
 
 // src/codex/app-readiness.ts
-import { readFileSync as readFileSync4 } from "fs";
+import { readFileSync as readFileSync5 } from "fs";
 function proxyRoot(spec) {
   const base = spec.proxyBaseUrl ?? `http://127.0.0.1:${spec.proxyPort}/v1`;
   if (!base.endsWith("/v1")) throw new Error("Codex App proxy base URL must end in /v1");
@@ -11455,7 +11888,7 @@ async function verifyCodexAppReadiness(spec, options = {}) {
   const root = proxyRoot(spec);
   const health = await checkedJson(`${root}/health`, fetchImpl);
   if (health.ok !== true) throw new Error("Relay proxy health check did not report ready");
-  const catalog = JSON.parse(readFileSync4(spec.catalogPath, "utf8"));
+  const catalog = JSON.parse(readFileSync5(spec.catalogPath, "utf8"));
   if (!Array.isArray(catalog.models) || catalog.models.length === 0) {
     throw new Error("Relay Codex model catalog is empty or invalid");
   }
@@ -11478,29 +11911,29 @@ import {
   existsSync as existsSync9,
   mkdirSync as mkdirSync5,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync5,
+  readFileSync as readFileSync6,
   rmSync as rmSync4,
   statSync as statSync2
 } from "fs";
-import { basename as basename2, join as join12 } from "path";
+import { basename as basename2, join as join13 } from "path";
 import { createHash as createHash3 } from "crypto";
 function getAppSessionLockPath(env = process.env) {
-  return join12(getRelayAiCodexDir(env), "session-app.json");
+  return join13(getRelayAiCodexDir(env), "session-app.json");
 }
 function getAppRestoreStatePath(env = process.env) {
-  return join12(getRelayAiCodexDir(env), "app-restore-state.json");
+  return join13(getRelayAiCodexDir(env), "app-restore-state.json");
 }
 function getAppCatalogPath(providerId, env = process.env) {
-  return join12(getRelayAiCodexDir(env), `app-models-${providerId}.json`);
+  return join13(getRelayAiCodexDir(env), `app-models-${providerId}.json`);
 }
 function fileSha256(path3) {
-  return createHash3("sha256").update(readFileSync5(path3)).digest("hex");
+  return createHash3("sha256").update(readFileSync6(path3)).digest("hex");
 }
 function readAppSessionLock(env = process.env) {
   const path3 = getAppSessionLockPath(env);
   if (!existsSync9(path3)) return null;
   try {
-    const parsed = JSON.parse(readFileSync5(path3, "utf8"));
+    const parsed = JSON.parse(readFileSync6(path3, "utf8"));
     if (typeof parsed.pid === "number" && typeof parsed.startedAt === "string") return parsed;
   } catch {
   }
@@ -11518,7 +11951,7 @@ function readAppRestoreState(env = process.env) {
   const path3 = getAppRestoreStatePath(env);
   if (!existsSync9(path3)) return null;
   try {
-    return JSON.parse(readFileSync5(path3, "utf8"));
+    return JSON.parse(readFileSync6(path3, "utf8"));
   } catch {
     return null;
   }
@@ -11539,7 +11972,7 @@ function backupConfigToml(env = process.env) {
   const backupsDir = getBackupsDir(env);
   mkdirSync5(backupsDir, { recursive: true });
   const base = basename2(configPath);
-  const backupPath = join12(backupsDir, `${base}.${Date.now()}.bak`);
+  const backupPath = join13(backupsDir, `${base}.${Date.now()}.bak`);
   copyFileSync2(configPath, backupPath);
   return backupPath;
 }
@@ -11556,7 +11989,7 @@ function saveAppRestoreStateBeforePatch(env = process.env) {
 function ownedAppCatalogPaths(env = process.env) {
   const codexDir = getRelayAiCodexDir(env);
   if (!existsSync9(codexDir)) return [];
-  return readdirSync2(codexDir).filter((n) => n.startsWith("app-models-") && n.endsWith(".json")).map((n) => join12(codexDir, n));
+  return readdirSync2(codexDir).filter((n) => n.startsWith("app-models-") && n.endsWith(".json")).map((n) => join13(codexDir, n));
 }
 function removeAppCatalogs(env = process.env) {
   const removed = [];
@@ -11574,7 +12007,7 @@ function newestConfigBackup(env = process.env) {
   if (!existsSync9(backupDir)) return null;
   const configBase = basename2(getCodexConfigPath());
   const candidates = readdirSync2(backupDir).filter((name) => name.startsWith(`${configBase}.`) && name.endsWith(".bak")).map((name) => {
-    const path3 = join12(backupDir, name);
+    const path3 = join13(backupDir, name);
     try {
       return { path: path3, mtimeMs: statSync2(path3).mtimeMs };
     } catch {
@@ -12180,7 +12613,7 @@ Mixed Codex App mode is unavailable: ${err instanceof Error ? err.message : err}
     }
   };
   try {
-    const catalogPath = mixedPlan ? join13(getRelayAiCodexDir(), "app-models-mixed.json") : favoritesActive && resolvedFavorites.length > 0 ? getFavoritesAppCatalogPath() : getAppCatalogPath(route.providerId);
+    const catalogPath = mixedPlan ? join14(getRelayAiCodexDir(), "app-models-mixed.json") : favoritesActive && resolvedFavorites.length > 0 ? getFavoritesAppCatalogPath() : getAppCatalogPath(route.providerId);
     const activeRoute = mixedPlan ? {
       tier: "proxy",
       modelId: mixedPlan.selectedSlug,
@@ -12387,30 +12820,30 @@ import pc11 from "picocolors";
 import * as p13 from "@clack/prompts";
 
 // src/claude-desktop/app-config.ts
-import { existsSync as existsSync10, readFileSync as readFileSync6, writeFileSync as writeFileSync5, mkdirSync as mkdirSync6 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync7, writeFileSync as writeFileSync6, mkdirSync as mkdirSync6 } from "fs";
 import { homedir as homedir9 } from "os";
-import { join as join14, dirname as dirname3 } from "path";
+import { join as join15, dirname as dirname3 } from "path";
 import { randomUUID as randomUUID3 } from "crypto";
 function getClaudeDesktopHome() {
   if (process.platform === "win32") {
-    return join14(process.env.LOCALAPPDATA || join14(homedir9(), "AppData", "Local"), "Claude-3p");
+    return join15(process.env.LOCALAPPDATA || join15(homedir9(), "AppData", "Local"), "Claude-3p");
   }
   if (process.platform === "linux") {
-    return join14(process.env.XDG_CONFIG_HOME || join14(homedir9(), ".config"), "Claude-3p");
+    return join15(process.env.XDG_CONFIG_HOME || join15(homedir9(), ".config"), "Claude-3p");
   }
-  return join14(homedir9(), "Library", "Application Support", "Claude-3p");
+  return join15(homedir9(), "Library", "Application Support", "Claude-3p");
 }
 function getConfigLibraryPath() {
-  return join14(getClaudeDesktopHome(), "configLibrary");
+  return join15(getClaudeDesktopHome(), "configLibrary");
 }
 function getMetaJsonPath() {
-  return join14(getConfigLibraryPath(), "_meta.json");
+  return join15(getConfigLibraryPath(), "_meta.json");
 }
 function readMetaJson() {
   const metaPath = getMetaJsonPath();
   if (!existsSync10(metaPath)) return null;
   try {
-    return JSON.parse(readFileSync6(metaPath, "utf8"));
+    return JSON.parse(readFileSync7(metaPath, "utf8"));
   } catch {
     return null;
   }
@@ -12418,7 +12851,7 @@ function readMetaJson() {
 function writeMetaJson(meta) {
   const metaPath = getMetaJsonPath();
   mkdirSync6(dirname3(metaPath), { recursive: true });
-  writeFileSync5(metaPath, `${JSON.stringify(meta, null, 2)}
+  writeFileSync6(metaPath, `${JSON.stringify(meta, null, 2)}
 `, "utf8");
 }
 function buildRelayAiConfig(proxyPort) {
@@ -12432,10 +12865,10 @@ function buildRelayAiConfig(proxyPort) {
 }
 function writeRelayAiConfig(proxyPort) {
   const uuid = randomUUID3();
-  const configPath = join14(getConfigLibraryPath(), `${uuid}.json`);
+  const configPath = join15(getConfigLibraryPath(), `${uuid}.json`);
   const config = buildRelayAiConfig(proxyPort);
   mkdirSync6(dirname3(configPath), { recursive: true });
-  writeFileSync5(configPath, `${JSON.stringify(config, null, 2)}
+  writeFileSync6(configPath, `${JSON.stringify(config, null, 2)}
 `, "utf8");
   const meta = readMetaJson() || { appliedId: "", entries: [] };
   meta.appliedId = uuid;
@@ -12591,21 +13024,21 @@ import {
   copyFileSync as copyFileSync3,
   existsSync as existsSync11,
   mkdirSync as mkdirSync7,
-  readFileSync as readFileSync7,
+  readFileSync as readFileSync8,
   renameSync as renameSync2,
   rmSync as rmSync5,
   unlinkSync as unlinkSync2,
-  writeFileSync as writeFileSync6
+  writeFileSync as writeFileSync7
 } from "fs";
-import { dirname as dirname4, join as join15 } from "path";
+import { dirname as dirname4, join as join16 } from "path";
 function getSessionLockPath2() {
-  return join15(getClaudeDesktopHome(), ".relay-ai.lock");
+  return join16(getClaudeDesktopHome(), ".relay-ai.lock");
 }
 function inspectSessionLock() {
   const path3 = getSessionLockPath2();
   if (!existsSync11(path3)) return { status: "missing" };
   try {
-    const parsed = JSON.parse(readFileSync7(path3, "utf8"));
+    const parsed = JSON.parse(readFileSync8(path3, "utf8"));
     if (typeof parsed.pid === "number" && typeof parsed.startedAt === "string" && typeof parsed.uuid === "string" && typeof parsed.proxyPort === "number") {
       return { status: "valid", lock: parsed };
     }
@@ -12618,7 +13051,7 @@ function writeSessionLock2(lock) {
   const tempPath = `${path3}.tmp.${process.pid}`;
   mkdirSync7(dirname4(path3), { recursive: true });
   try {
-    writeFileSync6(tempPath, `${JSON.stringify(lock, null, 2)}
+    writeFileSync7(tempPath, `${JSON.stringify(lock, null, 2)}
 `, "utf8");
     renameSync2(tempPath, path3);
   } finally {
@@ -12653,7 +13086,7 @@ function restoreMetaJson() {
   }
 }
 function removeRelayAiConfig(uuid) {
-  const configPath = join15(getConfigLibraryPath(), `${uuid}.json`);
+  const configPath = join16(getConfigLibraryPath(), `${uuid}.json`);
   if (existsSync11(configPath)) {
     try {
       rmSync5(configPath, { force: true });
@@ -12971,17 +13404,17 @@ ${pc11.bold("Claude Desktop 3P Mode Active")}`);
 }
 
 // src/ai-doc.ts
-import { existsSync as existsSync12, mkdirSync as mkdirSync8, readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync12, mkdirSync as mkdirSync8, readFileSync as readFileSync9, writeFileSync as writeFileSync8 } from "fs";
 import { homedir as homedir10 } from "os";
-import { join as join16 } from "path";
+import { join as join17 } from "path";
 var SKILL_DIR_NAME = "relay-ai-cli";
 var SKILL_INSTALL_DIRS = [
-  join16(getAppHome(), "skills"),
-  join16(homedir10(), ".claude", "skills"),
-  join16(homedir10(), ".agents", "skills"),
-  join16(homedir10(), ".codex", "skills"),
-  join16(homedir10(), ".cursor", "skills"),
-  join16(homedir10(), ".cursor", "skills-cursor")
+  join17(getAppHome(), "skills"),
+  join17(homedir10(), ".claude", "skills"),
+  join17(homedir10(), ".agents", "skills"),
+  join17(homedir10(), ".codex", "skills"),
+  join17(homedir10(), ".cursor", "skills"),
+  join17(homedir10(), ".cursor", "skills-cursor")
 ];
 function parseSkillVersion(content) {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -12995,10 +13428,10 @@ function parseSkillVersion(content) {
   return null;
 }
 function readInstalledSkillVersion(skillDir) {
-  const skillPath = join16(skillDir, "SKILL.md");
+  const skillPath = join17(skillDir, "SKILL.md");
   if (!existsSync12(skillPath)) return null;
   try {
-    const head = readFileSync8(skillPath, "utf-8").slice(0, 1024);
+    const head = readFileSync9(skillPath, "utf-8").slice(0, 1024);
     return parseSkillVersion(head.includes("---", 4) ? head : `${head}
 ---
 `);
@@ -13008,8 +13441,8 @@ function readInstalledSkillVersion(skillDir) {
 }
 function skillInstallTargets() {
   return SKILL_INSTALL_DIRS.map((dir) => {
-    const skillDir = join16(dir, SKILL_DIR_NAME);
-    return { skillDir, skillPath: join16(skillDir, "SKILL.md") };
+    const skillDir = join17(dir, SKILL_DIR_NAME);
+    return { skillDir, skillPath: join17(skillDir, "SKILL.md") };
   });
 }
 function formatProviderModels(provider) {
@@ -13514,7 +13947,7 @@ function installAiDoc(opts = {}) {
         continue;
       }
       mkdirSync8(skillDir, { recursive: true });
-      writeFileSync7(skillPath, doc, "utf-8");
+      writeFileSync8(skillPath, doc, "utf-8");
       if (previous) {
         result.updated.push({ path: skillPath, fromVersion: previous });
       } else {
@@ -13677,13 +14110,13 @@ import {
   chmodSync as chmodSync3,
   existsSync as existsSync13,
   mkdirSync as mkdirSync10,
-  readFileSync as readFileSync9,
+  readFileSync as readFileSync10,
   readdirSync as readdirSync3,
   rmSync as rmSync6,
   statSync as statSync3,
-  writeFileSync as writeFileSync9
+  writeFileSync as writeFileSync10
 } from "fs";
-import { dirname as dirname6, join as join18, resolve } from "path";
+import { dirname as dirname6, join as join19, resolve } from "path";
 import forge from "node-forge";
 var SESSION_ROOT = "http-proxy-sessions";
 var OWNER_FILE = "owner.pid";
@@ -13703,22 +14136,22 @@ function processIsRunning(pid) {
   }
 }
 function cleanupStaleHttpProxySessions(appHome = getAppHome()) {
-  const root = join18(appHome, SESSION_ROOT);
+  const root = join19(appHome, SESSION_ROOT);
   if (!existsSync13(root)) return;
   const now = Date.now();
   for (const name of readdirSync3(root)) {
-    const sessionDir = join18(root, name);
+    const sessionDir = join19(root, name);
     try {
       const stat = statSync3(sessionDir);
       if (!stat.isDirectory()) continue;
-      const ownerPath = join18(sessionDir, OWNER_FILE);
+      const ownerPath = join19(sessionDir, OWNER_FILE);
       if (!existsSync13(ownerPath)) {
         if (now - stat.mtimeMs > MID_CREATION_GRACE_MS) {
           rmSync6(sessionDir, { recursive: true, force: true });
         }
         continue;
       }
-      const pid = Number(readFileSync9(ownerPath, "utf8").trim());
+      const pid = Number(readFileSync10(ownerPath, "utf8").trim());
       if (!Number.isSafeInteger(pid) || pid <= 0) {
         const ownerStat = statSync3(ownerPath);
         const newestMtimeMs = Math.max(stat.mtimeMs, ownerStat.mtimeMs);
@@ -13734,13 +14167,13 @@ function cleanupStaleHttpProxySessions(appHome = getAppHome()) {
 }
 function createHttpProxyCertificates(appHome = getAppHome()) {
   cleanupStaleHttpProxySessions(appHome);
-  const root = join18(appHome, SESSION_ROOT);
+  const root = join19(appHome, SESSION_ROOT);
   mkdirSync10(root, { recursive: true, mode: 448 });
   chmodSync3(root, 448);
-  const sessionDir = join18(root, randomUUID4());
+  const sessionDir = join19(root, randomUUID4());
   mkdirSync10(sessionDir, { mode: 448 });
   chmodSync3(sessionDir, 448);
-  writeFileSync9(join18(sessionDir, OWNER_FILE), `${process.pid}
+  writeFileSync10(join19(sessionDir, OWNER_FILE), `${process.pid}
 `, { mode: 384 });
   try {
     const caKeys = forge.pki.rsa.generateKeyPair(2048);
@@ -13775,8 +14208,8 @@ function createHttpProxyCertificates(appHome = getAppHome()) {
     ]);
     server.sign(caKeys.privateKey, forge.md.sha256.create());
     const caCert = forge.pki.certificateToPem(ca);
-    const caCertPath = join18(sessionDir, "relay-ai-ca.pem");
-    writeFileSync9(caCertPath, caCert, { encoding: "utf8", mode: 384 });
+    const caCertPath = join19(sessionDir, "relay-ai-ca.pem");
+    writeFileSync10(caCertPath, caCert, { encoding: "utf8", mode: 384 });
     chmodSync3(caCertPath, 384);
     let cleaned = false;
     const cleanupOnExit = () => {
@@ -13818,11 +14251,11 @@ function createHttpProxyCaBundle(relayCaCertPath, additionalCaCertPath) {
   if (resolve(additionalCaCertPath) === resolve(relayCaCertPath)) {
     return relayCaCertPath;
   }
-  const relayCa = readFileSync9(relayCaCertPath, "utf8").trimEnd();
-  const additionalCa = readFileSync9(additionalCaCertPath, "utf8").trim();
+  const relayCa = readFileSync10(relayCaCertPath, "utf8").trimEnd();
+  const additionalCa = readFileSync10(additionalCaCertPath, "utf8").trim();
   if (!additionalCa) return relayCaCertPath;
-  const combinedPath = join18(dirname6(relayCaCertPath), "combined-ca.pem");
-  writeFileSync9(
+  const combinedPath = join19(dirname6(relayCaCertPath), "combined-ca.pem");
+  writeFileSync10(
     combinedPath,
     `${relayCa}
 ${additionalCa}
@@ -13834,9 +14267,9 @@ ${additionalCa}
 }
 
 // src/http-proxy/server.ts
-import * as http2 from "http";
-import * as https from "https";
-import * as net from "net";
+import * as http3 from "http";
+import * as https2 from "https";
+import * as net2 from "net";
 import { randomBytes as randomBytes3, timingSafeEqual } from "crypto";
 import { URL as URL2 } from "url";
 var ANTHROPIC_HOST = RELAY_SENTINEL_HOST;
@@ -13949,7 +14382,7 @@ function forwardRawRequest(req, res, rawBody, origin, rejectUnauthorized) {
       settled = true;
       resolve2();
     };
-    const transport = origin.protocol === "https:" ? https : http2;
+    const transport = origin.protocol === "https:" ? https2 : http3;
     const upstream = transport.request({
       protocol: origin.protocol,
       hostname: origin.hostname,
@@ -13985,7 +14418,7 @@ function forwardToAdapter(req, res, rawBody, adapter) {
     };
     const sessionId = req.headers["x-claude-code-session-id"];
     const opencodeSession = req.headers[OPENCODE_SESSION_HEADER];
-    const upstream = http2.request({
+    const upstream = http3.request({
       hostname: "127.0.0.1",
       port: adapter.port,
       method: "POST",
@@ -14016,7 +14449,7 @@ function forwardToAdapter(req, res, rawBody, adapter) {
 }
 function fetchUpstreamModelsList(req, origin, rejectUnauthorized) {
   return new Promise((resolve2) => {
-    const transport = origin.protocol === "https:" ? https : http2;
+    const transport = origin.protocol === "https:" ? https2 : http3;
     const rawHeaders = requestHeadersWithoutProxyHeaders(req, ANTHROPIC_UPSTREAM_HOST);
     const headers = ["accept-encoding", "identity"];
     for (let i = 0; i < rawHeaders.length; i += 2) {
@@ -14062,7 +14495,7 @@ function forwardPlainHttp(req, res) {
     res.end("HTTP proxy requests must use an HTTP or HTTPS URL");
     return;
   }
-  const transport = target.protocol === "https:" ? https : http2;
+  const transport = target.protocol === "https:" ? https2 : http3;
   const upstream = transport.request({
     protocol: target.protocol,
     hostname: target.hostname,
@@ -14108,7 +14541,7 @@ async function startHttpProxy(options) {
     certificates.cleanup();
     throw error;
   }
-  const mitmServer = https.createServer({
+  const mitmServer = https2.createServer({
     key: certificates.serverKey,
     cert: certificates.serverCert,
     minVersion: "TLSv1.2"
@@ -14228,7 +14661,7 @@ async function startHttpProxy(options) {
   const password3 = randomBytes3(32).toString("base64url");
   const expectedAuthorization = `Basic ${Buffer.from(`${PROXY_USERNAME}:${password3}`).toString("base64")}`;
   const sockets = /* @__PURE__ */ new Set();
-  const proxyServer = http2.createServer((req, res) => {
+  const proxyServer = http3.createServer((req, res) => {
     if (!isAuthorized(req, expectedAuthorization)) {
       rejectProxyRequest(res);
       return;
@@ -14256,7 +14689,7 @@ async function startHttpProxy(options) {
       clientSocket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       return;
     }
-    const upstream = net.connect(target.port, target.host);
+    const upstream = net2.connect(target.port, target.host);
     let established = false;
     sockets.add(upstream);
     clientSocket.once("close", () => {
@@ -14406,6 +14839,7 @@ async function launchClaudeWithHttpProxy(options, dependencies = defaultDependen
 }
 
 // src/cli.ts
+configureNetworkProxy();
 var STARTER_CLAUDE_FLAGS = /* @__PURE__ */ new Set(["--dry-run", "--setup", "--trace", "--http-proxy", "--help", "-h", "--version", "-v"]);
 var RELAY_LAUNCH_FLAGS = /* @__PURE__ */ new Set(["--provider", "--model"]);
 function parseRelayLaunchFlag(arg, rest, index, parsed) {
@@ -15077,7 +15511,7 @@ ${pc12.bold("How it works:")}
   The normal IDE profile is never modified.
 
 ${pc12.bold("Platform:")}
-  macOS (Apple Silicon) \u2014 other platforms coming after testing.
+  macOS, Windows, and Linux (experimental; use a throwaway Google account).
 
 ${pc12.bold("Examples:")}
   relay-ai antigravity-ide
@@ -15846,7 +16280,7 @@ Options:
   --trace    Write debug logs under ~/.relay-ai/logs/`);
       return 0;
     }
-    const { runUiCommand } = await import("./ui-command-6ZMM5K5K.js");
+    const { runUiCommand } = await import("./ui-command-JUCGRXH4.js");
     return runUiCommand({ trace: parsed.trace, serverMode: parsed.uiServerMode });
   }
   if (parsed.command === "models") {

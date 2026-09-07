@@ -3,12 +3,13 @@
 import { readStoredProviderCredential, saveProviderCredential } from '../env.js';
 import { fetchTemplateModels } from './fetch-template-models.js';
 import { fetchAnthropicModels } from './fetch-anthropic-models.js';
+import { fetchGeminiModels } from './fetch-gemini-models.js';
 import { loadRegistry, saveRegistry } from './io.js';
 import type { CachedModel, RegistryProvider } from './types.js';
 import { customProviderId, isValidProviderId, slugifyProviderId } from './validate.js';
 import { validateCustomEndpointUrl } from './url-security.js';
 
-export type CustomEndpointKind = 'openai' | 'anthropic';
+export type CustomEndpointKind = 'openai' | 'anthropic' | 'gemini';
 
 export interface AddCustomEndpointInput {
   displayName: string;
@@ -33,7 +34,9 @@ export interface AddCustomEndpointResult {
 }
 
 function npmForKind(kind: CustomEndpointKind): string {
-  return kind === 'anthropic' ? '@ai-sdk/anthropic' : '@ai-sdk/openai-compatible';
+  if (kind === 'anthropic') return '@ai-sdk/anthropic';
+  if (kind === 'gemini') return '@ai-sdk/google';
+  return '@ai-sdk/openai-compatible';
 }
 
 function modelFormatForKind(kind: CustomEndpointKind): 'anthropic' | 'openai' {
@@ -42,6 +45,7 @@ function modelFormatForKind(kind: CustomEndpointKind): 'anthropic' | 'openai' {
 
 export function customEndpointKind(provider: RegistryProvider): CustomEndpointKind | null {
   if (provider.templateId === 'custom-anthropic') return 'anthropic';
+  if (provider.templateId === 'custom-gemini') return 'gemini';
   if (provider.templateId === 'custom-openai') return 'openai';
   return null;
 }
@@ -108,6 +112,9 @@ export async function fetchCustomEndpointModels(
 ): Promise<{ models: CachedModel[]; baseUrl: string; error?: string; hint?: string }> {
   if (input.kind === 'anthropic') {
     return fetchAnthropicModels(input.normalizedBaseUrl, input.apiKey, input.headers);
+  }
+  if (input.kind === 'gemini') {
+    return fetchGeminiModels(input.normalizedBaseUrl, input.apiKey, input.headers);
   }
   return fetchTemplateModels(
     {
@@ -180,7 +187,7 @@ export async function addCustomEndpointProvider(input: AddCustomEndpointInput): 
   const now = new Date().toISOString();
   const entry: RegistryProvider = {
     id: providerId,
-    templateId: input.kind === 'anthropic' ? 'custom-anthropic' : 'custom-openai',
+    templateId: input.kind === 'anthropic' ? 'custom-anthropic' : input.kind === 'gemini' ? 'custom-gemini' : 'custom-openai',
     name: input.displayName.trim(),
     enabled: true,
     authRef: apiKey === 'local' ? `keyring:provider:${providerId}` : `keyring:provider:${providerId}`,

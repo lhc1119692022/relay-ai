@@ -3,6 +3,7 @@
 import { BACKENDS } from '../constants.js';
 import { getModels } from '../models.js';
 import { fetchAnthropicModels } from './fetch-anthropic-models.js';
+import { fetchGeminiModels } from './fetch-gemini-models.js';
 import { customEndpointKind } from './custom-endpoint.js';
 import { fetchTemplateModels } from './fetch-template-models.js';
 import { fetchClinePassModels } from './fetch-cline-pass-models.js';
@@ -514,6 +515,17 @@ async function refreshApiListProvider(
 
   if (npm === '@ai-sdk/anthropic') {
     const fetched = await fetchAnthropicModels(safeBaseUrl, apiKey, extraHeaders);
+    if (fetched.error || fetched.models.length === 0) {
+      return { models: [], error: fetched.error ?? 'No models returned.', baseUrl: fetched.baseUrl };
+    }
+    return {
+      models: fetched.models.map(m => ({ ...m, apiUrl: fetched.baseUrl })),
+      baseUrl: fetched.baseUrl,
+    };
+  }
+
+  if (customEndpointKind(provider) === 'gemini') {
+    const fetched = await fetchGeminiModels(safeBaseUrl, apiKey, extraHeaders);
     if (fetched.error || fetched.models.length === 0) {
       return { models: [], error: fetched.error ?? 'No models returned.', baseUrl: fetched.baseUrl };
     }

@@ -2,6 +2,8 @@
 
 `relay-ai` uses a Native Provider Registry to store configuration and API keys securely in your OS keychain. This guide outlines all available providers, what they do, and common gotchas (like multiple variants of the same provider).
 
+For a custom backend, choose the protocol it natively exposes: OpenAI-compatible, Anthropic-compatible, or **Gemini Native**. Gemini Native expects a `/v1beta/models` catalog and `generateContent`/`streamGenerateContent` endpoints; it is different from Google's OpenAI-compatible endpoint.
+
 ## Native Providers
 
 When you run `relay-ai providers add`, you can select from the following templates. The CLI automatically configures the correct endpoint format (`@ai-sdk/openai-compatible` vs specific SDKs) and fetches available models.
