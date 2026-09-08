@@ -13,6 +13,7 @@ export default defineConfig({
   sourcemap: true,
   external: [
     '@napi-rs/keyring',
+    'undici',
     'ws',
     /^@ai-sdk\//,
     '@openrouter/ai-sdk-provider',
