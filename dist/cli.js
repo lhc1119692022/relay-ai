@@ -203,7 +203,7 @@ import {
   waitForCodexAppQuit,
   writeSecureLogLine,
   zenRegistryStub
-} from "./chunk-5U4A5QFO.js";
+} from "./chunk-3O4NRCDS.js";
 import {
   filterTemplates,
   getTemplateById,
@@ -211,7 +211,7 @@ import {
   listAddableTemplates,
   listSupportedTemplates,
   listVisibleOAuthTemplates
-} from "./chunk-SNAZEWRV.js";
+} from "./chunk-VNYSSYFH.js";
 
 // src/cli.ts
 import pc12 from "picocolors";
@@ -2278,7 +2278,7 @@ function claudeCodeProviderOptions(input, sdkParams) {
   const seed = input.oauthAccountId ?? input.apiKey;
   const { userId } = injectClaudeIdentity({}, input.providerData, seed);
   const betaBody = {
-    ...sdkParams.system ? { system: [{ type: "text", text: sdkParams.system }] } : {},
+    ...sdkParams.instructions ? { system: [{ type: "text", text: sdkParams.instructions }] } : {},
     ...sdkParams.tools ? { tools: Object.keys(sdkParams.tools).map((name) => ({ name })) } : {}
   };
   return {
@@ -2290,7 +2290,7 @@ function claudeCodeProviderOptions(input, sdkParams) {
 }
 function applyClaudeCodeOAuthIdentity(input, sdkParams) {
   if (!isClaudeCodeOAuthRoute(input)) return sdkParams;
-  sdkParams.system = prependClaudeCodeBillingLine(sdkParams.system);
+  sdkParams.instructions = prependClaudeCodeBillingLine(sdkParams.instructions);
   sdkParams.providerOptions = mergeProviderOptions(
     sdkParams.providerOptions,
     claudeCodeProviderOptions(input, sdkParams)
@@ -2439,7 +2439,7 @@ function makeReasoningOutputItem(id, text5) {
 function translateResponsesInput(input, instructions, npm, toolContext = createCodexToolContext()) {
   if (typeof input === "string") {
     return {
-      system: instructions?.trim() || void 0,
+      instructions: instructions?.trim() || void 0,
       messages: [{ role: "user", content: [{ type: "text", text: input }] }],
       deferredTools: []
     };
@@ -2551,7 +2551,7 @@ ${summary}` }] });
     }
   }
   return {
-    system,
+    instructions: system,
     messages: ensureUserFirst(mergeConsecutiveMessages(messages)),
     deferredTools
   };
@@ -2617,7 +2617,7 @@ function translateResponsesRequest(body, npm, metadata, options = {}) {
     effectiveTools = lifted.tools;
   }
   ingestToolDefs(effectiveTools, toolContext);
-  const { system, messages, deferredTools } = translateResponsesInput(effectiveInput, body.instructions, npm, toolContext);
+  const { instructions: system, messages, deferredTools } = translateResponsesInput(effectiveInput, body.instructions, npm, toolContext);
   const effort = body.reasoning?.effort;
   const providerOptions = deepMergeProviderOptions(
     thinkingProviderOptions(npm),
@@ -2625,7 +2625,7 @@ function translateResponsesRequest(body, npm, metadata, options = {}) {
   );
   const tools = translateResponsesTools([...effectiveTools, ...deferredTools], options);
   return {
-    system,
+    instructions: system,
     messages,
     tools,
     toolContext,
@@ -3116,7 +3116,7 @@ async function streamResponsesResponse(model, params, modelId, write, onDone, on
   });
   const watchedStream = (async function* () {
     try {
-      for await (const part of result.fullStream) {
+      for await (const part of result.stream) {
         clearTimeout(idleTimer);
         idleTimer = setTimeout(
           () => abort.abort(new Error(`no data received from provider for ${Math.round(idleTimeoutMs / 1e3)}s`)),
@@ -3865,7 +3865,7 @@ function isExternalToolContinuation(input) {
   return Array.isArray(input) && input.length > 0 && input.every(isExternalToolOutputItem);
 }
 function estimateCodexRequestChars(params) {
-  let chars = (params.system ?? "").length;
+  let chars = (params.instructions ?? "").length;
   for (const msg of params.messages) {
     if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
@@ -4075,9 +4075,9 @@ function applyExternalCodexRuntimeIdentity(params, route) {
   ].join("\n");
   return {
     ...params,
-    system: params.system?.trim() ? `${identity}
+    instructions: params.instructions?.trim() ? `${identity}
 
-${params.system}` : identity
+${params.instructions}` : identity
   };
 }
 async function startCodexProxy(routes, options = {}) {
@@ -7291,8 +7291,8 @@ function translateGeminiRequest(body, options = {}) {
         }
       } else if (p15.inlineData) {
         parts.push({
-          type: "image",
-          image: Buffer.from(p15.inlineData.data, "base64"),
+          type: "file",
+          data: Buffer.from(p15.inlineData.data, "base64"),
           mediaType: p15.inlineData.mimeType
         });
       } else if (p15.functionCall) {
@@ -7365,7 +7365,7 @@ function translateGeminiRequest(body, options = {}) {
     responseFormat = { type: "json" };
   }
   return {
-    system,
+    instructions: system,
     messages: mergedMessages,
     tools: tools && Object.keys(tools).length > 0 ? tools : void 0,
     toolChoice,
@@ -7529,13 +7529,13 @@ ${JSON.stringify(params, null, 2)}`);
             "Connection": "keep-alive"
           });
           plog("Starting streamText...");
-          const { fullStream } = streamText2({
+          const { stream } = streamText2({
             model: languageModel,
             ...params
           });
           const toolCallBuffers = /* @__PURE__ */ new Map();
           let isThinking = false;
-          for await (const part of fullStream) {
+          for await (const part of stream) {
             const p15 = part;
             plog(`Stream chunk type: ${p15.type}`);
             if (isThinking && (p15.type === "tool-input-start" || p15.type === "tool-call" || p15.type === "finish")) {
@@ -8226,7 +8226,7 @@ function summarizeSdkRequestForTrace(request2) {
     return { role: message.role, parts };
   });
   return {
-    systemChars: request2.system?.length ?? 0,
+    systemChars: request2.instructions?.length ?? 0,
     messages,
     toolNames: Object.keys(request2.tools ?? {}),
     ...request2.toolChoice ? { toolChoice: request2.toolChoice } : {}
@@ -8353,9 +8353,9 @@ function translateRequest(ccReq, options = {}) {
       } else if (part.inlineData) {
         if (isSupportedImage(part)) {
           contentParts.push({
-            type: "image",
-            image: part.inlineData.data,
-            mimeType: part.inlineData.mimeType
+            type: "file",
+            data: Buffer.from(part.inlineData.data, "base64"),
+            mediaType: part.inlineData.mimeType
           });
         } else {
           contentParts.push({ type: "text", text: OMITTED_VOICE_TEXT });
@@ -8406,7 +8406,7 @@ function translateRequest(ccReq, options = {}) {
     toolChoice = "auto";
   }
   return {
-    system,
+    instructions: system,
     messages: sdkMessages,
     tools,
     toolChoice,
@@ -10038,9 +10038,9 @@ async function handleStreamingRequest(res, route, providerOptions, parsed, log14
   );
   const langModel = await createRouteLanguageModel(route);
   const responseId = `relay-${Date.now()}`;
-  const { fullStream } = streamText3({
+  const { stream } = streamText3({
     model: langModel,
-    system: sdkParams.system,
+    instructions: sdkParams.instructions,
     messages: sdkParams.messages,
     tools: sdkParams.tools,
     toolChoice: sdkParams.toolChoice,
@@ -10090,7 +10090,7 @@ async function handleStreamingRequest(res, route, providerOptions, parsed, log14
     textBuffer = "";
     bufferingJsonText = false;
   };
-  for await (const part of fullStream) {
+  for await (const part of stream) {
     const p15 = part;
     if (p15.type === "reasoning-delta" || p15.type === "reasoning") {
       const reasoning = reasoningDeltaText(p15);
@@ -10218,7 +10218,7 @@ async function handleUnaryRequest(res, route, providerOptions, parsed, log14, op
   const responseId = `relay-${Date.now()}`;
   const result = await generateText3({
     model: langModel,
-    system: sdkParams.system,
+    instructions: sdkParams.instructions,
     messages: sdkParams.messages,
     tools: sdkParams.tools,
     toolChoice: sdkParams.toolChoice,
@@ -16280,7 +16280,7 @@ Options:
   --trace    Write debug logs under ~/.relay-ai/logs/`);
       return 0;
     }
-    const { runUiCommand } = await import("./ui-command-JUCGRXH4.js");
+    const { runUiCommand } = await import("./ui-command-RNW7S62I.js");
     return runUiCommand({ trace: parsed.trace, serverMode: parsed.uiServerMode });
   }
   if (parsed.command === "models") {

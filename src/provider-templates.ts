@@ -290,7 +290,7 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
     id: 'venice',
     name: 'Venice AI',
     authType: 'api',
-    npm: 'venice-ai-sdk-provider',
+    npm: '@ai-sdk/openai-compatible',
     defaultBaseUrl: 'https://api.venice.ai/api/v1',
     signupUrl: 'https://venice.ai/settings/api',
     modelSource: 'api-list',
@@ -392,7 +392,9 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
   {
     id: 'antigravity',
     name: 'Cloud Code Assist OAuth (Google)',
-    shortName: 'Cloud Code Assist',
+    // Compact label users actually recognise: every surface that shows this
+    // provider calls it Antigravity, and it is also the shortest of the two.
+    shortName: 'Antigravity',
     authType: 'oauth',
     npm: '@ai-sdk/openai-compatible',
     signupUrl: 'https://antigravity.google',

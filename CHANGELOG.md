@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.0] - 2026-09-07
+
+### Changed
+
+- **Vercel AI SDK v7.** Relay now uses `ai` ^7 and matching `@ai-sdk/*` majors so embedded Core models emit `specificationVersion: 'v4'` and share one SDK generation with consumers already on v7 (for example Alef). Node.js 22+ is required. SDK call params use `instructions` instead of `system`, streaming uses `result.stream`, and image parts are `file`. Anthropic and Codex wire formats are unchanged. Venice is routed through `@ai-sdk/openai-compatible` instead of the v6-era `venice-ai-sdk-provider` package. `@ai-sdk/vercel` remains bundled but is deprecated upstream (its v0 API is gone); Relay has no Vercel template. ([Issue #71](https://github.com/jacob-bd/relay-ai/issues/71))
+
+## [0.10.1] - 2026-09-07
+
+### Changed
+
+- **Antigravity's compact label is now `Antigravity`.** `providerShortName` returned `Cloud Code Assist`, which is both longer than necessary and not the name any surface actually uses for this provider — an embedded Core consumer showing compact labels still ended up with a long, unfamiliar string. The provider's full `name` is unchanged, so nothing that displays the long form is affected.
+
 ## [0.10.0] - 2026-09-07
 
 ### Added
