@@ -3,6 +3,42 @@ import { buildCompactionResponseBody } from '../src/codex-responses-adapter.js';
 import { forwardNativeCodexHttp, nativeResponsesWebSocketOptions, prepareNativeCodexBody, NATIVE_FORWARD_HEADERS } from '../src/codex/native-forward.js';
 
 describe('native Codex forwarding', () => {
+  it('removes Relay-generated reasoning items before native forwarding', () => {
+    const relayReasoning = {
+      type: 'reasoning',
+      id: 'rs_external',
+      summary: [{ type: 'summary_text', text: 'Relay-only hidden reasoning' }],
+    };
+    const relayMessage = {
+      type: 'message',
+      id: 'msg_external',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'The remembered token is blue.' }],
+    };
+    const original = {
+      model: 'gpt-5.6-luna',
+      input: [relayReasoning, relayMessage, { type: 'message', role: 'user', content: 'What was the token?' }],
+    };
+
+    const prepared = prepareNativeCodexBody(original);
+
+    expect(prepared.input).toEqual([relayMessage, original.input[2]]);
+    expect(prepared.input).not.toContainEqual(relayReasoning);
+  });
+
+  it('keeps native reasoning items that include encrypted content', () => {
+    const nativeReasoning = {
+      type: 'reasoning',
+      id: 'rs_native',
+      encrypted_content: `gAAAAA${'A'.repeat(40)}`,
+    };
+
+    const prepared = prepareNativeCodexBody({ input: [nativeReasoning] });
+
+    expect(prepared.input).toEqual([nativeReasoning]);
+  });
+
   it('converts Relay compaction into readable native history without touching native compaction', () => {
     const relayCompaction = (
       buildCompactionResponseBody('fixed the parser', 'relay-model').output as Record<string, unknown>[]
@@ -95,7 +131,7 @@ describe('native Codex forwarding', () => {
       authorization: 'Bearer native',
       'ChatGPT-Account-Id': 'acct',
       'OpenAI-Beta': 'responses_websockets=2026-02-06',
-      version: '0.144.1',
+      version: '0.153.4',
       originator: 'codex_cli_rs',
       'x-codex-turn-metadata': '{"turn_id":"turn-1"}',
     });

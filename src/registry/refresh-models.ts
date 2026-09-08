@@ -10,6 +10,7 @@ import { fetchClinePassModels } from './fetch-cline-pass-models.js';
 import { fetchClaudeCodeModels } from '../oauth/claude-code.js';
 import { loadRegistry, saveRegistry } from './io.js';
 import { resolveModelSource } from './model-source.js';
+import { getProviderModels } from './provider-models.js';
 import { validateCustomEndpointUrl } from './url-security.js';
 import {
   effectiveProviderBaseUrl,
@@ -568,6 +569,12 @@ function updateProviderCache(
   const idx = registry.providers.findIndex(p => p.id === providerId);
   if (idx < 0) return;
   const now = new Date().toISOString();
+  // A UI add/remove may have completed while the catalog request was in flight.
+  const currentProviders = new Map(loadRegistry().providers.map(p => [p.id, p]));
+  for (const entry of registry.providers) {
+    const current = currentProviders.get(entry.id);
+    if (current) entry.manualModels = current.manualModels;
+  }
   const existing = registry.providers[idx]!;
   registry.providers[idx] = {
     ...existing,
@@ -615,7 +622,7 @@ export async function refreshProviderModels(
   }
 
   try {
-    const previousModelCount = provider.modelsCache?.models.length ?? 0;
+    const previousModelCount = getProviderModels(provider).length;
     let models: CachedModel[] = [];
     let baseUrl: string | undefined;
     let oauthFallbackReason: string | undefined;
@@ -744,7 +751,7 @@ export async function refreshProviderModels(
       id: provider.id,
       name: provider.name,
       ok: true,
-      modelCount: enriched.length,
+      modelCount: getProviderModels(registry.providers.find(p => p.id === providerId)!).length,
       previousModelCount: provider.refreshedAt ? previousModelCount : undefined,
       reason: oauthFallbackReason,
     };

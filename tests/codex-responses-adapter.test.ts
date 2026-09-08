@@ -35,6 +35,27 @@ describe('translateResponsesRequest', () => {
     expect(params.messages[0]!.role).toBe('user');
   });
 
+  it('preserves input images alongside text when translating a user message', () => {
+    const params = translateResponsesRequest({
+      model: 'gemini-3.1-pro',
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Describe this image' },
+          { type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=' },
+        ],
+      }],
+    }, '@ai-sdk/google');
+
+    expect(params.messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Describe this image' },
+        { type: 'image', image: 'data:image/png;base64,aGVsbG8=' },
+      ],
+    }]);
+  });
+
   it('prepends user placeholder when first message is assistant', () => {
     const params = translateResponsesInput([
       { role: 'assistant', content: 'prior' },
@@ -808,7 +829,30 @@ describe('writeResponsesStream', () => {
     expect(summaries[0].reasoningChars).toBe(8);
   });
 
-  it('emits a failed response.completed when the stream is aborted (idle timeout)', async () => {
+  it('emits response.failed so provider capability errors are visible in Codex', async () => {
+    const { writeResponsesStream } = await import('../src/codex-responses-adapter.js');
+    const chunks: string[] = [];
+    const write = (c: string) => chunks.push(c);
+
+    async function* stream() {
+      yield {
+        type: 'error',
+        error: new Error('No endpoints found that support image input (HTTP 404)'),
+      };
+    }
+
+    await writeResponsesStream(stream(), 'nvidia/nemotron-3.5-lightning:free', write);
+
+    const events = parseSseEvents(chunks.join(''));
+    const failed = events.find(event => event.event === 'response.failed');
+    expect(failed?.data.response).toMatchObject({
+      status: 'failed',
+      error: { message: 'No endpoints found that support image input (HTTP 404)' },
+    });
+    expect(events.some(event => event.event === 'response.completed')).toBe(false);
+  });
+
+  it('emits response.failed when the stream is aborted (idle timeout)', async () => {
     const { writeResponsesStream } = await import('../src/codex-responses-adapter.js');
     const chunks: string[] = [];
     const write = (c: string) => chunks.push(c);
@@ -820,7 +864,7 @@ describe('writeResponsesStream', () => {
 
     await writeResponsesStream(stream(), 'test-model', write);
     const completed = parseSseEvents(chunks.join(''))
-      .filter(event => event.event === 'response.completed')
+      .filter(event => event.event === 'response.failed')
       .map(event => event.data.response);
     expect(completed).toHaveLength(1);
     expect(completed[0].status).toBe('failed');
@@ -865,7 +909,7 @@ describe('streamResponsesResponse idle timeout', () => {
     );
 
     const completed = parseSseEvents(chunks.join(''))
-      .filter(event => event.event === 'response.completed')
+      .filter(event => event.event === 'response.failed')
       .map(event => event.data.response);
     expect(completed).toHaveLength(1);
     expect(completed[0].status).toBe('failed');

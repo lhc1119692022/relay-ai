@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.1] - 2026-09-08
+
+### Added
+
+- **Manually add models missing from a provider's catalog.** The Providers page and `relay-ai providers` wizard offer **Add model manually** for API-key OpenAI-compatible, Anthropic, OpenAI, and OpenRouter providers. Enter an exact model ID, optional display name and optional context size. **Test & Add** uses the provider's existing credentials for three small streamed requests: generation, a harmless tool call with automatic tool selection, and a tool-result continuation. Failed or incomplete responses are not saved. Manual entries are stored separately, survive model-list refreshes, and appear in launch catalogs, favorites, the gateway, and embedded Core. Both interfaces support removing a manual entry. Unknown pricing, vision support, and unspecified context sizes are not claimed as verified capabilities.
+
+### Fixed
+
+- **GPT Astra with OpenAI OAuth:** update Relay's Codex Responses-Lite version header from `0.144.1` to `0.153.4`, which passed a live Astra request after the old header was rejected. The Claude adapter now preserves the original upstream status and message when collecting a streamed response instead of replacing it with `502 No output generated`. Thanks to the Issue #68 reporter for the testing tips that helped identify the fix. ([Issue #68](https://github.com/jacob-bd/relay-ai/issues/68))
+- **Codex App WebSocket framing:** correctly handles control frames, multiple frames received in one network chunk, and fragmented request messages. This prevents valid Windows ChatGPT/Codex requests from being dropped or parsed as invalid JSON, avoiding the reconnect loop reported in [Issue #72](https://github.com/jacob-bd/relay-ai/issues/72).
+- **Codex App image input:** preserve Responses API `input_image` parts when translating requests to external providers, so image prompts are no longer silently reduced to text-only prompts.
+- **Codex provider failures:** emit a proper Responses `response.failed` event for upstream errors, so capability failures such as “No endpoints found that support image input” are shown to the user instead of appearing as a blank response or successful empty turn.
+- **Windows ChatGPT cleanup:** when ChatGPT remains alive as a tray/background process after Ctrl+C, Relay now escalates from graceful shutdown to a guarded force-quit before restoring `config.toml`. Help and `--restore` paths also skip the background models.dev refresh, preventing a Windows Node/libuv shutdown assertion.
+- **Blank manual-model context:** optional context input is now omitted when blank or undefined, instead of being converted to `NaN` and rejected by the model registry.
+
 ## [0.11.0] - 2026-09-07
 
 ### Changed

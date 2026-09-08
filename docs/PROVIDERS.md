@@ -2,7 +2,19 @@
 
 `relay-ai` uses a Native Provider Registry to store configuration and API keys securely in your OS keychain. This guide outlines all available providers, what they do, and common gotchas (like multiple variants of the same provider).
 
-For a custom backend, choose the protocol it natively exposes: OpenAI-compatible, Anthropic-compatible, or **Gemini Native**. Gemini Native expects a `/v1beta/models` catalog and `generateContent`/`streamGenerateContent` endpoints; it is different from Google's OpenAI-compatible endpoint.
+## Add a model manually
+
+For beta models, private model IDs, or aliases missing from the provider's model list:
+
+1. In `relay-ai ui`, open **Providers & Keys**, select a provider, and use **Add model manually**. In the terminal, run `relay-ai providers`, select the provider, and choose **Add model manually**.
+2. Enter the exact upstream model ID and an optional display name. The context-size field is optional in both the UI and CLI; enter it only if your provider documents it, otherwise leave it blank and Relay omits the context metadata.
+3. Choose **Test & Add**. Relay makes three small API calls to test text generation, streaming, a harmless tool call, and continuation after its result. Provider charges may apply. Validation stops on failure and has a 90-second request budget. Only passing entries are saved.
+
+Manual models use the provider's existing endpoint, headers and credentials. The initial release supports non-OAuth OpenAI-compatible, Anthropic, OpenAI, and OpenRouter providers. Subscription-specific and cloud protocols continue to use their normal catalogs. Tool support is tested using automatic selection because some reasoning models reject forced tool selection.
+
+Entries are stored in `providers.json` under `manualModels`, separate from the downloaded `modelsCache`, and survive refreshes. They appear alongside discovered models in launch pickers, favorites, the API gateway, and embedded Core. When the provider later lists the same ID, only one entry appears; removing your manual entry reveals the discovered entry. Both the UI and provider wizard offer removal.
+
+“Validated” records a successful small test at a point in time. It does not establish pricing, maximum context, image support, or availability after a beta expires. Context sizes you enter are user-supplied; Relay still applies target context requirements and runtime safety defaults.
 
 ## Native Providers
 
