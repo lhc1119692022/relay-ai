@@ -57,6 +57,8 @@ describe('antigravity launch-ide', () => {
         `--user-data-dir=${tempProfile}`,
         '--allow-insecure-localhost',
         '--proxy-bypass-list=localhost;127.0.0.1;[::1]',
+        '--disable-web-security',
+        '--allow-file-access-from-files',
       ]),
       expect.objectContaining({
         stdio: 'ignore',
@@ -126,6 +128,8 @@ describe('antigravity launch-ide', () => {
         expect.stringContaining(path.join('.relay-ai', 'antigravity', 'extensions')),
         '--allow-insecure-localhost',
         '--proxy-bypass-list=localhost;127.0.0.1;[::1]',
+        '--disable-web-security',
+        '--allow-file-access-from-files',
       ]),
       expect.objectContaining({
         stdio: 'ignore',

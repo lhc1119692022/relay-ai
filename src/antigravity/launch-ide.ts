@@ -337,6 +337,8 @@ export function launchAntigravityApp(
       // page. External language-server traffic still follows the inherited
       // proxy environment.
       '--proxy-bypass-list=localhost;127.0.0.1;[::1]',
+      '--disable-web-security',
+      '--allow-file-access-from-files',
       ...extraArgs,
     ];
 
@@ -410,6 +412,8 @@ export function launchAntigravityIde(
       // localhost certificate; allow that certificate for this managed app.
       '--allow-insecure-localhost',
       '--proxy-bypass-list=localhost;127.0.0.1;[::1]',
+      '--disable-web-security',
+      '--allow-file-access-from-files',
       ...extraArgs,
     ];
 
